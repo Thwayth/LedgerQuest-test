@@ -1,0 +1,21 @@
+# Render Blueprint: фоновый воркер (без HTTP-порта).
+# Диск нужен, чтобы SQLite со статистикой не терялась при деплоях (платный план).
+services:
+  - type: worker
+    name: crypto-signalbot
+    runtime: docker
+    plan: starter
+    autoDeploy: false
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: CHANNEL_ID
+        sync: false
+      - key: OWNER_ID
+        sync: false
+      - key: DRY_RUN
+        value: "true"   # переключите на false, когда проверите посты в личке
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1

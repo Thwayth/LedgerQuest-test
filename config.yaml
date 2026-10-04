@@ -1,0 +1,39 @@
+# Порядок = приоритет: если монета есть на нескольких биржах, берётся первая
+exchanges: [binance, bybit, okx]
+timeframe: 1d          # основной ТФ идей (1d, 4h)
+history_bars: 365      # глубина истории для анализа и графика
+
+universe:
+  min_quote_volume_usd: 20000000   # объём за 24ч, USDT-перпетуалы
+  max_symbols: 150
+  exclude_bases: [USDC, FDUSD, TUSD, USDP, DAI, BUSD, EUR, AEUR]
+
+strategy:
+  max_distance_pct: 10     # цена не дальше N% от ближней границы зоны
+  zone_tol_atr: 1.0        # допуск кластеризации swing-уровней (в ATR)
+  zone_min_touches: 2
+  zone_min_height_pct: 8   # минимальная толщина зоны на графике
+  pools_count: 2           # сколько пулов ликвидности брать целями
+  min_rr: 2.0              # R/R до последней цели от консервативного входа
+  min_score: 55            # порог скоринга 0..100
+
+schedule:
+  scan_interval_minutes: 240
+  track_interval_minutes: 15
+  max_ideas_per_day: 3
+  cooldown_days: 7         # не повторять монету N дней после закрытия идеи
+  max_wait_days: 10        # идея отменяется, если пробоя нет за N дней
+  weekly_report_weekday: mon
+  weekly_report_hour_utc: 9
+
+risk:
+  risk_per_trade_pct: 1.0
+
+caption:
+  disclaimer: true
+
+chart:
+  watermark_text: "LedgerQuest"
+  watermark_image: null    # путь к PNG-логотипу (приоритетнее текста)
+
+db_path: data/signalbot.sqlite3

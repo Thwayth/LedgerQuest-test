@@ -37,3 +37,25 @@ def make_trb_like(seed: int = 7, end: str = "2026-10-04") -> pd.DataFrame:
         {"ts": days.as_unit("ms").astype("int64"), "open": open_, "high": high, "low": low, "close": close, "volume": rng.uniform(1e5, 5e5, len(days))}
     )
     return df
+
+
+def make_random_walk(seed: int = 0, bars: int = 760, start_price: float = 10.0, end: str = "2026-10-04") -> pd.DataFrame:
+    """Случайное блуждание с режимами (тренд/боковик) — для теста бэктеста без сети."""
+    rng = np.random.default_rng(seed)
+    days = pd.date_range(end=end, periods=bars, freq="D")
+    drift = np.zeros(bars)
+    i = 0
+    while i < bars:
+        n = int(rng.integers(30, 90))
+        drift[i : i + n] = rng.normal(0, 0.006)
+        i += n
+    ret = drift + rng.normal(0, 0.03, bars)
+    close = start_price * np.exp(np.cumsum(ret))
+    open_ = np.r_[close[0], close[:-1]]
+    spread = np.abs(rng.normal(0.015, 0.01, bars)) * close
+    high = np.maximum(open_, close) + spread * rng.uniform(0.2, 1.0, bars)
+    low = np.minimum(open_, close) - spread * rng.uniform(0.2, 1.0, bars)
+    return pd.DataFrame(
+        {"ts": days.as_unit("ms").astype("int64"), "open": open_, "high": high, "low": low, "close": close,
+         "volume": rng.uniform(1e5, 5e5, bars) * (1 + np.abs(ret) * 20)}
+    )
