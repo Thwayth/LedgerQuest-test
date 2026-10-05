@@ -26,6 +26,12 @@ class FakePub:
     async def send(self, chat_id, text):
         self.sent.append((chat_id, text))
 
+    async def post_sticker(self, file_id):
+        self.stickers = getattr(self, "stickers", []) + [("post", file_id)]
+
+    async def reply_sticker(self, chat_id, message_id, file_id):
+        self.stickers = getattr(self, "stickers", []) + [("reply", chat_id, message_id, file_id)]
+
     async def post_text(self, text):
         self.texts = getattr(self, "texts", []) + [text]
         return 111, 500 + len(self.texts)

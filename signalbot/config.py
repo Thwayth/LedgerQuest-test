@@ -48,6 +48,8 @@ class Config:
     disclaimer: bool = False
     use_context: bool = True
     writer_enabled: bool = True
+    stickers_enabled: bool = True
+    sticker_chance: dict = field(default_factory=dict)
     fun_enabled: bool = True
     fun_model: str = "claude-sonnet-5-5"
     fun_slots: list[tuple[int, int, str]] = field(default_factory=lambda: [(10, 0, "meme"), (14, 30, "fact"), (18, 0, "mix")])
@@ -126,6 +128,8 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         disclaimer=bool(raw.get("caption", {}).get("disclaimer", False)),
         use_context=bool(raw.get("context", {}).get("enabled", True)),
         writer_enabled=bool(raw.get("writer", {}).get("enabled", True)),
+        stickers_enabled=bool(raw.get("stickers", {}).get("enabled", True)),
+        sticker_chance={str(k): float(v) for k, v in (raw.get("stickers", {}).get("chance") or {}).items()},
         fun_enabled=bool(raw.get("fun", {}).get("enabled", True)),
         fun_model=str(raw.get("fun", {}).get("model", "claude-sonnet-5-5")),
         fun_slots=_slots(raw.get("fun", {}).get("slots")),

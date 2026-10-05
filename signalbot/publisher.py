@@ -18,6 +18,8 @@ class Publisher(Protocol):
     async def reply(self, chat_id: int, message_id: int, text: str) -> None: ...
     async def send(self, chat_id: int | str, text: str) -> None: ...
     async def post_text(self, text: str) -> tuple[int, int]: ...
+    async def post_sticker(self, file_id: str) -> None: ...
+    async def reply_sticker(self, chat_id: int, message_id: int, file_id: str) -> None: ...
 
 
 _CUSTOM_EMOJI = re.compile(r"<tg-emoji[^>]*>(.*?)</tg-emoji>", re.S)
@@ -70,6 +72,12 @@ class TelegramPublisher:
 
     async def send(self, chat_id: int | str, text: str) -> None:
         await self._send_html(chat_id, text)
+
+    async def post_sticker(self, file_id: str) -> None:
+        await self._retry(lambda: self.bot.send_sticker(self.target, file_id))
+
+    async def reply_sticker(self, chat_id: int, message_id: int, file_id: str) -> None:
+        await self._retry(lambda: self.bot.send_sticker(chat_id, file_id, reply_to_message_id=message_id))
 
     async def post_text(self, text: str) -> tuple[int, int]:
         msg = await self._send_html(self.target, text)

@@ -28,6 +28,7 @@ from .publisher import Publisher
 from .scanner import analyze
 from .scoring import context_points
 from .stats import compute_stats, format_stats
+from .stickers import DEFAULT_CHANCE, SITUATIONS, StickerCatalog, StickerDescriber
 from .storage import Storage
 from .writer import PostWriter
 
@@ -50,6 +51,7 @@ class Service:
         if writer is None and cfg.writer_enabled and PostWriter.available():
             writer = PostWriter(cfg.writer_model, cfg.writer_effort)
         self.writer = writer
+        self.stickers = StickerCatalog(db, StickerDescriber(cfg.fun_model) if (cfg.stickers_enabled and PostWriter.available()) else None)
         self.fun_writer = FunWriter(cfg.fun_model, "low") if (cfg.fun_enabled and cfg.writer_enabled and PostWriter.available()) else None
         self.morning_writer = MorningWriter(cfg.writer_model, cfg.writer_effort) if (cfg.writer_enabled and PostWriter.available()) else None
         self._sem = asyncio.Semaphore(concurrency)
@@ -163,6 +165,7 @@ class Service:
             chat_id=chat_id, message_id=message_id,
         )
         self.db.add(t)
+        await self.maybe_sticker("bullish" if idea.side.value == "LONG" else "bearish")
         log.info("опубликовано %s %s score=%.1f", idea.side.value, idea.symbol, idea.score)
         return t
 
@@ -192,6 +195,9 @@ class Service:
             if t.chat_id and t.message_id:
                 try:
                     await self.pub.reply(t.chat_id, t.message_id, update_text(t, ev))
+                    sit = {"BREAKOUT": "hype", "TP": "profit", "DONE": "celebrate", "STOP": "loss", "CANCEL": "shrug", "EXPIRED": "shrug"}.get(ev.kind)
+                    if sit:
+                        await self.maybe_sticker(sit, reply_to=(t.chat_id, t.message_id))
                 except Exception:
                     log.exception("не удалось отправить апдейт %s %s", t.symbol, ev.kind)
         return len(events)
@@ -222,6 +228,7 @@ class Service:
             text = template_text(kind, data, day, self.cfg.audience)
         emojis = pick_emojis(self.db.emojis(), 3, day)
         chat_id, message_id = await pub.post_text(build_morning_html(text, emojis))
+        await self.maybe_sticker("morning", pub)
         log.info("утренний пост отправлен (%s)", kind)
         if remember:
             ts = int(now.timestamp() * 1000)
@@ -232,6 +239,44 @@ class Service:
                 due = ts + max(1, (self.cfg.reveal_hour_utc - self.cfg.morning_hour_utc) % 24) * 3_600_000
                 self.db.add_reveal(chat_id, message_id, reveal_html(mover[0], mover[1], day, pick_emojis(self.db.emojis(), 1, day + "r")[0]), due)
         return True
+
+    # --- стикеры -----------------------------------------------------------------------
+    async def maybe_sticker(self, situation: str, pub: Publisher | None = None, reply_to: tuple[int, int] | None = None, force: bool = False) -> bool:
+        """Стикер к ситуации с заданной вероятностью. Любой сбой молча игнорируется: стикер не должен ломать пост."""
+        if not self.cfg.stickers_enabled:
+            return False
+        chance = self.cfg.sticker_chance.get(situation, DEFAULT_CHANCE.get(situation, 0.3))
+        if not force and random.random() >= chance:
+            return False
+        file_id = self.stickers.pick(situation)
+        if not file_id:
+            return False
+        pub = pub or self.pub
+        try:
+            if reply_to:
+                await pub.reply_sticker(reply_to[0], reply_to[1], file_id)
+            else:
+                await pub.post_sticker(file_id)
+            return True
+        except Exception as e:
+            log.warning("стикер (%s) не отправлен: %s", situation, e)
+            return False
+
+    async def sticker_sync(self, bot) -> dict:
+        return await self.stickers.sync(bot)
+
+    async def sticker_preview(self, pub: Publisher) -> int:
+        """По стикеру на каждую ситуацию, с подписью, чтобы проверить разметку."""
+        n = 0
+        for sit in SITUATIONS:
+            fid = self.stickers.pick(sit)
+            if fid:
+                await pub.post_text(f"<b>{sit}</b>")
+                await pub.post_sticker(fid)
+                n += 1
+        if n == 0:
+            await pub.post_text("Стикеров пока нет: пришлите мне по стикеру из каждого пака.")
+        return n
 
     # --- мемы, факты, шутки ---------------------------------------------------------------
     def _used(self, key: str) -> list[int]:
@@ -289,6 +334,7 @@ class Service:
                 png = await asyncio.to_thread(render_meme, spec.template, spec.top, spec.bottom, rng.randrange(10**6), self.cfg.mascot_image)
                 await pub.post_photo(png, f"{e} {escape(spec.caption)}" if spec.caption else e, "meme")
                 summary, mark_key, mark_val = f"мем: {spec.top} / {spec.bottom}", "fun_used_memes", used
+        await self.maybe_sticker({"meme": "laugh", "joke": "laugh", "fact": "think"}[kind], pub)
         log.info("пост для настроения отправлен (%s)", kind)
         if remember:
             self.db.kv_set(mark_key, json.dumps(mark_val[-200:], ensure_ascii=False))

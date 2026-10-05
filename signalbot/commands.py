@@ -9,6 +9,7 @@ from aiogram.exceptions import TelegramConflictError
 from aiogram.enums import MessageEntityType
 
 from .config import Config
+from .stickers import emoji_tags
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +17,19 @@ log = logging.getLogger(__name__)
 def _is_our_channel(chat, cfg: Config) -> bool:
     cid = (cfg.channel_id or "").strip()
     return bool(cid) and (str(chat.id) == cid or (getattr(chat, "username", None) and f"@{chat.username}".lower() == cid.lower()))
+
+
+def _remember_sticker(svc, st) -> str:
+    kind = str(getattr(st.type, "value", st.type))
+    if kind != "regular" or not getattr(st, "set_name", None):
+        return ("Это не обычный стикер из пака (кастомные эмодзи или без пака). "
+                "Премиум-эмодзи для постов пришлите обычным текстом, а стикеры — из любого стикерпака.")
+    new_set = svc.db.add_sticker_set(st.set_name)
+    thumb = st.thumbnail.file_id if getattr(st, "thumbnail", None) else None
+    svc.db.upsert_sticker(st.file_unique_id, st.file_id, st.set_name, st.emoji, emoji_tags(st.emoji), thumb)
+    if new_set:
+        return f"Запомнил стикерпак «{st.set_name}». Разберу все его стикеры при ближайшем запуске и буду ставить подходящие по ситуации."
+    return f"Пак «{st.set_name}» уже в моей коллекции."
 
 
 def collect_custom_emoji(m) -> list[tuple[str, str]]:
@@ -54,6 +68,13 @@ async def handle_updates(bot, cfg: Config, svc) -> bool:
                     await m.answer(f"Запомнил премиум-эмодзи: {' '.join(ch for _, ch in new)} (новых: {len(new)}). Буду использовать их в утренних постах.")
                 except Exception:
                     log.exception("не удалось подтвердить эмодзи")
+        st = getattr(m, "sticker", None)
+        if is_owner_chat and st is not None:  # владелец прислал стикер: запоминаем весь пак
+            try:
+                await m.answer(_remember_sticker(svc, st))
+            except Exception:
+                log.exception("не удалось обработать стикер")
+            continue
         if not m.text or not m.text.startswith("/"):
             continue
         cmd = m.text.split()[0].split("@")[0].lower()
@@ -75,6 +96,8 @@ async def handle_updates(bot, cfg: Config, svc) -> bool:
                 continue
             elif cmd == "/stats":
                 await m.answer(svc.stats_text())
+            elif cmd == "/stickers":
+                await m.answer(svc.stickers.stats())
             elif cmd == "/active":
                 items = svc.db.active()
                 text = "\n".join(

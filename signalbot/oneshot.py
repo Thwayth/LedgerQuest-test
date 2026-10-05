@@ -8,6 +8,7 @@
     python -m signalbot.oneshot reset    # очистить идеи в базе (перед боевым запуском после тестов)
     python -m signalbot.oneshot morning  # утренний пост сейчас (в канал / в личку при DRY_RUN)
     python -m signalbot.oneshot morning-preview  # пробный утренний пост только владельцу
+    python -m signalbot.oneshot sticker-preview  # по стикеру на каждую ситуацию, только владельцу
     python -m signalbot.oneshot fun      # мем/шутка прямо сейчас
     python -m signalbot.oneshot fun-preview  # пробные мем, факт и шутка только владельцу
 
@@ -31,7 +32,7 @@ from .storage import Storage
 
 log = logging.getLogger("signalbot.oneshot")
 RUN_EVERY_MIN = 30  # частота cron в workflow
-MODES = ("auto", "scan", "track", "report", "getid", "preview", "reset", "morning", "morning-preview", "fun", "fun-preview")
+MODES = ("auto", "scan", "track", "report", "getid", "preview", "reset", "morning", "morning-preview", "fun", "fun-preview", "sticker-preview")
 _WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
@@ -88,6 +89,16 @@ async def run(mode: str, now: datetime | None = None) -> None:
             return
         # сообщения владельца (команды, премиум-эмодзи) читаем при каждом запуске, в том числе перед утренним постом
         force_scan = await handle_updates(bot, cfg, svc) if mode != "report" else False
+        if mode != "report":
+            try:
+                res = await svc.sticker_sync(bot)  # новые стикерпаки + разметка (порциями)
+                if res["added"] or res["described"]:
+                    log.info("стикеры: добавлено %d, размечено Claude %d", res["added"], res["described"])
+            except Exception:
+                log.exception("синхронизация стикеров не удалась")
+        if mode == "sticker-preview":
+            await svc.sticker_preview(TelegramPublisher(bot, cfg.owner_id))
+            return
         if mode == "morning-preview":
             await svc.morning_post(TelegramPublisher(bot, cfg.owner_id), remember=False)
             return

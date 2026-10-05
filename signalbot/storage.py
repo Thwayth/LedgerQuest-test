@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS ideas (
 );
 CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, text TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS sticker_sets (name TEXT PRIMARY KEY, title TEXT, synced INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS stickers (unique_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, set_name TEXT, emoji TEXT,
+    tags TEXT NOT NULL DEFAULT '[]', description TEXT, described INTEGER NOT NULL DEFAULT 0, thumb_id TEXT);
 CREATE TABLE IF NOT EXISTS emoji (id TEXT PRIMARY KEY, char TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS reveals (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
     text TEXT NOT NULL, due_ts INTEGER NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
@@ -111,6 +114,57 @@ class Storage:
         with self._lock:
             rows = self._db.execute("SELECT text FROM posts ORDER BY id DESC LIMIT ?", (n,)).fetchall()
         return [r[0] for r in rows][::-1]
+
+    # --- стикеры -------------------------------------------------------------------
+    def add_sticker_set(self, name: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("INSERT OR IGNORE INTO sticker_sets (name) VALUES (?)", (name,))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def sticker_sets(self, only_unsynced: bool = False) -> list[str]:
+        with self._lock:
+            q = "SELECT name FROM sticker_sets" + (" WHERE synced=0" if only_unsynced else "") + " ORDER BY rowid"
+            return [r[0] for r in self._db.execute(q).fetchall()]
+
+    def mark_set_synced(self, name: str, title: str | None) -> None:
+        with self._lock:
+            self._db.execute("UPDATE sticker_sets SET synced=1, title=? WHERE name=?", (title, name))
+            self._db.commit()
+
+    def upsert_sticker(self, unique_id: str, file_id: str, set_name: str | None, emoji: str | None, tags: list[str], thumb_id: str | None) -> bool:
+        """Новый стикер вставляется с тегами по эмодзи; у известного обновляются только file_id и превью (разметка Claude сохраняется)."""
+        with self._lock:
+            exists = self._db.execute("SELECT 1 FROM stickers WHERE unique_id=?", (unique_id,)).fetchone()
+            if exists:
+                self._db.execute("UPDATE stickers SET file_id=?, thumb_id=COALESCE(?, thumb_id) WHERE unique_id=?", (file_id, thumb_id, unique_id))
+            else:
+                self._db.execute("INSERT INTO stickers (unique_id, file_id, set_name, emoji, tags, thumb_id) VALUES (?,?,?,?,?,?)",
+                                 (unique_id, file_id, set_name, emoji, json.dumps(tags, ensure_ascii=False), thumb_id))
+            self._db.commit()
+            return not exists
+
+    def pending_stickers(self, limit: int) -> list[tuple[str, str]]:
+        """(unique_id, thumb_id) стикеров, которые Claude ещё не смотрел."""
+        with self._lock:
+            return [(r[0], r[1]) for r in self._db.execute(
+                "SELECT unique_id, thumb_id FROM stickers WHERE described=0 AND thumb_id IS NOT NULL ORDER BY rowid LIMIT ?", (limit,)).fetchall()]
+
+    def set_sticker_description(self, unique_id: str, description: str, tags: list[str]) -> None:
+        with self._lock:
+            self._db.execute("UPDATE stickers SET description=?, tags=?, described=1 WHERE unique_id=?",
+                             (description, json.dumps(tags, ensure_ascii=False), unique_id))
+            self._db.commit()
+
+    def mark_sticker_unviewable(self, unique_id: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE stickers SET described=1 WHERE unique_id=?", (unique_id,))
+            self._db.commit()
+
+    def stickers(self) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT unique_id, file_id, set_name, emoji, tags, description, described FROM stickers ORDER BY rowid").fetchall()
+        return [dict(unique_id=r[0], file_id=r[1], set_name=r[2], emoji=r[3], tags=json.loads(r[4]), description=r[5], described=bool(r[6])) for r in rows]
 
     def kv_get(self, key: str) -> str | None:
         with self._lock:

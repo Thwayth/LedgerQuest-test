@@ -47,6 +47,20 @@ morning:
     - https://cointelegraph.com/rss
     - https://decrypt.co/feed
 
+stickers:
+  enabled: true            # стикеры из присланных вами паков, по ситуации
+  chance:                  # вероятность стикера в каждой ситуации (0..1)
+    morning: 0.8           # утренний пост
+    profit: 0.8            # цель взята
+    celebrate: 1.0         # все цели закрыты
+    loss: 0.5              # стоп
+    shrug: 0.3             # идея отменена / неактуальна
+    hype: 0.6              # пробой уровня
+    laugh: 0.5             # мем и шутка
+    think: 0.4             # факт
+    bullish: 0.25          # новый сигнал LONG
+    bearish: 0.25          # новый сигнал SHORT
+
 fun:
   enabled: true            # мемы, факты и шутки между сделками
   model: claude-sonnet-5-5 # лёгкая творческая задача: Sonnet дешевле Opus
