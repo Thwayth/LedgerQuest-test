@@ -46,6 +46,13 @@ class MarketData:
     def __init__(self, ex, http_get: Callable[[str], Any] = _default_http_get):
         self.ex, self._get = ex, http_get
 
+    def fear_greed(self) -> int | None:
+        try:
+            return int(self._get(FNG_URL)["data"][0]["value"])
+        except Exception as e:
+            log.warning("Fear & Greed недоступен: %s", e)
+            return None
+
     # --- глобальный контекст (один раз за скан) -------------------------------
     def global_context(self, exchange: str) -> GlobalContext:
         g = GlobalContext()

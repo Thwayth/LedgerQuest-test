@@ -12,6 +12,9 @@ from .chart import ChartStyle, render_idea_chart
 from .config import Config
 from .exchanges import TF_LABEL_RU, TF_MS, Exchanges
 from .lifecycle import Tracked, evaluate
+from .morning import (KIND_MOOD, KIND_NEWS, KIND_TEASER, MARK, TEASER_MIN_CHANGE, MorningWriter, build_data,
+                      build_morning_html, choose_kind, collect_snapshot, pick_emojis, reveal_html, template_text)
+from .news import fetch_headlines
 from .models import Idea
 from .publisher import Publisher
 from .scanner import analyze
@@ -39,6 +42,7 @@ class Service:
         if writer is None and cfg.writer_enabled and PostWriter.available():
             writer = PostWriter(cfg.writer_model, cfg.writer_effort)
         self.writer = writer
+        self.morning_writer = MorningWriter(cfg.writer_model, cfg.writer_effort) if (cfg.writer_enabled and PostWriter.available()) else None
         self._sem = asyncio.Semaphore(concurrency)
         self._scan_lock = asyncio.Lock()
         self._track_lock = asyncio.Lock()
@@ -126,7 +130,7 @@ class Service:
         """Текст поста: Claude (если есть ключ) или шаблоны; числа ТВХ/ТП/СЛ всегда считает бот."""
         text = None
         if self.writer is not None:
-            recent = [t[:160] for t in self.db.recent_posts(5)]
+            recent = [t[:160] for t in self.db.recent_posts(12) if not t.startswith(MARK)][-5:]
             text = await asyncio.to_thread(self.writer.write, idea, day, recent)
         return build_caption(idea, day, self.cfg.disclaimer, text)
 
@@ -182,6 +186,54 @@ class Service:
                 except Exception:
                     log.exception("не удалось отправить апдейт %s %s", t.symbol, ev.kind)
         return len(events)
+
+    # --- утренний пост ---------------------------------------------------------------
+    async def morning_post(self, pub: Publisher | None = None, remember: bool = True) -> bool:
+        """Утреннее приветствие с новостью/заходом на реакции. remember=False — пробный показ без состояния."""
+        pub = pub or self.pub
+        now = datetime.now(timezone.utc)
+        day = now.strftime("%Y-%m-%d")
+        snap = await asyncio.to_thread(collect_snapshot, self.ex, self.cfg.exchanges, self.cfg.min_quote_volume_usd)
+        heads = await asyncio.to_thread(fetch_headlines, self.cfg.news_feeds) if self.cfg.news_feeds else []
+        market = self.market or MarketData(self.ex)
+        fng = await asyncio.to_thread(market.fear_greed)
+        mover = snap.gainers[0] if snap and snap.gainers and snap.gainers[0][1] >= TEASER_MIN_CHANGE else None
+        kind = choose_kind(day, self.db.kv_get("last_morning_kind"), bool(heads), bool(mover))
+        reveal_msk = f"{(self.cfg.reveal_hour_utc + 3) % 24:02d}:00"
+        data = build_data(kind, snap, heads, fng, reveal_msk)
+        hidden = mover[0] if (kind == KIND_TEASER and mover) else None
+        recent = [t[len(MARK):][:200] for t in self.db.recent_posts(30) if t.startswith(MARK)][-4:]
+        text = None
+        if self.morning_writer is not None:
+            text = await asyncio.to_thread(self.morning_writer.write, data, recent, hidden)
+        if text is None:  # нет ключа / сбой Claude: шаблоны (новости без Claude не пересказать — тогда настроение рынка)
+            if kind == KIND_NEWS:
+                kind = KIND_MOOD
+                data = build_data(kind, snap, heads, fng, reveal_msk)
+            text = template_text(kind, data, day, self.cfg.audience)
+        emojis = pick_emojis(self.db.emojis(), 3, day)
+        chat_id, message_id = await pub.post_text(build_morning_html(text, emojis))
+        log.info("утренний пост отправлен (%s)", kind)
+        if remember:
+            ts = int(now.timestamp() * 1000)
+            self.db.kv_set("last_morning", day)
+            self.db.kv_set("last_morning_kind", kind)
+            self.db.add_post(ts, MARK + f"{text.greeting} {text.body} {text.hook}")
+            if kind == KIND_TEASER and mover:
+                due = ts + max(1, (self.cfg.reveal_hour_utc - self.cfg.morning_hour_utc) % 24) * 3_600_000
+                self.db.add_reveal(chat_id, message_id, reveal_html(mover[0], mover[1], day, pick_emojis(self.db.emojis(), 1, day + "r")[0]), due)
+        return True
+
+    async def send_due_reveals(self) -> int:
+        n = 0
+        for rid, chat_id, message_id, text in self.db.due_reveals(int(time.time() * 1000)):
+            try:
+                await self.pub.reply(chat_id, message_id, text)
+                self.db.mark_reveal_sent(rid)
+                n += 1
+            except Exception:
+                log.exception("не удалось отправить разгадку %s", rid)
+        return n
 
     # --- отчёты ----------------------------------------------------------------
     def stats_text(self, days: int | None = None) -> str:

@@ -26,6 +26,10 @@ class FakePub:
     async def send(self, chat_id, text):
         self.sent.append((chat_id, text))
 
+    async def post_text(self, text):
+        self.texts = getattr(self, "texts", []) + [text]
+        return 111, 500 + len(self.texts)
+
 
 class FakeEx:
     """Одна монета с синтетической историей; 1ч-свечи после публикации задаются тестом."""

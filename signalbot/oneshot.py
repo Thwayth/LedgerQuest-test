@@ -6,6 +6,8 @@
     python -m signalbot.oneshot getid    # показать id чатов/каналов, где бот видел сообщения
     python -m signalbot.oneshot preview  # 2 примера постов только владельцу (без базы и лимитов)
     python -m signalbot.oneshot reset    # очистить идеи в базе (перед боевым запуском после тестов)
+    python -m signalbot.oneshot morning  # утренний пост сейчас (в канал / в личку при DRY_RUN)
+    python -m signalbot.oneshot morning-preview  # пробный утренний пост только владельцу
 
 Расписание Actions гоняет `auto` каждые RUN_EVERY_MIN минут; скан и недельный отчёт
 выбираются по времени UTC из config.yaml. Команды бота (/scan, /stats) в этом режиме не работают.
@@ -27,7 +29,7 @@ from .storage import Storage
 
 log = logging.getLogger("signalbot.oneshot")
 RUN_EVERY_MIN = 30  # частота cron в workflow
-MODES = ("auto", "scan", "track", "report", "getid", "preview", "reset")
+MODES = ("auto", "scan", "track", "report", "getid", "preview", "reset", "morning", "morning-preview")
 _WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
@@ -35,6 +37,11 @@ def scan_due(now: datetime, interval_min: int, window_min: int = RUN_EVERY_MIN) 
     """Скан раз в interval_min минут: срабатывает в первом окне каждого интервала (от полуночи UTC)."""
     minutes = now.hour * 60 + now.minute
     return minutes % max(interval_min, window_min) < window_min
+
+
+def morning_due(now: datetime, hour_utc: int, last_day: str | None, window_h: int = 6) -> bool:
+    """Утренний пост: с нужного часа и ещё window_h часов (на случай опоздания расписания GitHub), раз в сутки."""
+    return hour_utc <= now.hour < hour_utc + window_h and last_day != now.strftime("%Y-%m-%d")
 
 
 def report_due(now: datetime, weekday: str, hour: int, window_min: int = RUN_EVERY_MIN) -> bool:
@@ -71,12 +78,28 @@ async def run(mode: str, now: datetime | None = None) -> None:
         if mode == "reset":
             log.info("reset: удалено идей %d", svc.db.clear_ideas())
             return
+        # сообщения владельца (команды, премиум-эмодзи) читаем при каждом запуске, в том числе перед утренним постом
+        force_scan = await handle_updates(bot, cfg, svc) if mode != "report" else False
+        if mode == "morning-preview":
+            await svc.morning_post(TelegramPublisher(bot, cfg.owner_id), remember=False)
+            return
+        if mode == "morning":
+            await svc.morning_post()
+            return
         if mode == "preview":
             n = await svc.preview(TelegramPublisher(bot, cfg.owner_id), n=2)
             log.info("preview: отправлено %d", n)
             return
         auto = mode == "auto"
-        force_scan = await handle_updates(bot, cfg, svc) if mode in ("auto", "track", "scan") else False
+        if auto:
+            if cfg.morning_enabled and morning_due(now, cfg.morning_hour_utc, svc.db.kv_get("last_morning")):
+                try:
+                    await svc.morning_post()
+                except Exception:
+                    log.exception("утренний пост не удался")
+            n_rev = await svc.send_due_reveals()
+            if n_rev:
+                log.info("разгадок отправлено: %d", n_rev)
         if mode in ("auto", "track"):
             n = await svc.track_once()
             log.info("трекинг: событий %d", n)

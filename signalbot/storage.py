@@ -19,6 +19,10 @@ CREATE TABLE IF NOT EXISTS ideas (
     closed_ts INTEGER, result_pct REAL, r_multiple REAL, chat_id INTEGER, message_id INTEGER
 );
 CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS emoji (id TEXT PRIMARY KEY, char TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reveals (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
+    text TEXT NOT NULL, due_ts INTEGER NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS ix_ideas_symbol ON ideas(symbol);
 CREATE INDEX IF NOT EXISTS ix_ideas_status ON ideas(status);
 """
@@ -107,6 +111,42 @@ class Storage:
         with self._lock:
             rows = self._db.execute("SELECT text FROM posts ORDER BY id DESC LIMIT ?", (n,)).fetchall()
         return [r[0] for r in rows][::-1]
+
+    def kv_get(self, key: str) -> str | None:
+        with self._lock:
+            r = self._db.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def kv_set(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+            self._db.commit()
+
+    def add_emoji(self, emoji_id: str, char: str) -> bool:
+        """Запоминает кастомное эмодзи. True, если оно новое."""
+        with self._lock:
+            cur = self._db.execute("INSERT OR IGNORE INTO emoji (id, char) VALUES (?, ?)", (emoji_id, char))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def emojis(self) -> list[tuple[str, str]]:
+        with self._lock:
+            return [(r[0], r[1]) for r in self._db.execute("SELECT id, char FROM emoji ORDER BY rowid").fetchall()]
+
+    def add_reveal(self, chat_id: int, message_id: int, text: str, due_ts: int) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO reveals (chat_id, message_id, text, due_ts) VALUES (?, ?, ?, ?)", (chat_id, message_id, text, due_ts))
+            self._db.commit()
+
+    def due_reveals(self, now_ms: int) -> list[tuple[int, int, int, str]]:
+        with self._lock:
+            return [tuple(r) for r in self._db.execute(
+                "SELECT id, chat_id, message_id, text FROM reveals WHERE sent=0 AND due_ts<=? ORDER BY id", (now_ms,)).fetchall()]
+
+    def mark_reveal_sent(self, reveal_id: int) -> None:
+        with self._lock:
+            self._db.execute("UPDATE reveals SET sent=1 WHERE id=?", (reveal_id,))
+            self._db.commit()
 
     def clear_ideas(self) -> int:
         """Сброс идей (после тестового периода, чтобы пробные идеи не блокировали боевые)."""

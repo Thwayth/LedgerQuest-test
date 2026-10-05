@@ -48,6 +48,11 @@ class Config:
     disclaimer: bool = False
     use_context: bool = True
     writer_enabled: bool = True
+    morning_enabled: bool = True
+    morning_hour_utc: int = 6
+    reveal_hour_utc: int = 9
+    audience: list[str] = field(default_factory=lambda: ["Прайд", "львы", "ребята", "команда", "народ"])
+    news_feeds: list[str] = field(default_factory=list)
     writer_model: str = "claude-opus-5-5"
     writer_effort: str = "low"
     mascot_image: str | None = None
@@ -103,6 +108,11 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         disclaimer=bool(raw.get("caption", {}).get("disclaimer", False)),
         use_context=bool(raw.get("context", {}).get("enabled", True)),
         writer_enabled=bool(raw.get("writer", {}).get("enabled", True)),
+        morning_enabled=bool(raw.get("morning", {}).get("enabled", True)),
+        morning_hour_utc=(int(raw.get("morning", {}).get("hour_msk", 9)) - 3) % 24,  # МСК = UTC+3, без перехода на летнее время
+        reveal_hour_utc=(int(raw.get("morning", {}).get("reveal_hour_msk", 12)) - 3) % 24,
+        audience=list(raw.get("morning", {}).get("audience") or ["Прайд", "львы", "ребята", "команда", "народ"]),
+        news_feeds=list(raw.get("morning", {}).get("news_feeds") or []),
         writer_model=str(raw.get("writer", {}).get("model", "claude-opus-5-5")),
         writer_effort=str(raw.get("writer", {}).get("effort", "low")),
         mascot_image=c.get("mascot_image"),

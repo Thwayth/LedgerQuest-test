@@ -6,23 +6,55 @@ import logging
 from html import escape
 
 from aiogram.exceptions import TelegramConflictError
+from aiogram.enums import MessageEntityType
 
 from .config import Config
 
 log = logging.getLogger(__name__)
 
 
+def _is_our_channel(chat, cfg: Config) -> bool:
+    cid = (cfg.channel_id or "").strip()
+    return bool(cid) and (str(chat.id) == cid or (getattr(chat, "username", None) and f"@{chat.username}".lower() == cid.lower()))
+
+
+def collect_custom_emoji(m) -> list[tuple[str, str]]:
+    """Премиум-эмодзи из сообщения: [(id, обычный символ)]."""
+    out = []
+    for ents, text in ((getattr(m, "entities", None), getattr(m, "text", None)), (getattr(m, "caption_entities", None), getattr(m, "caption", None))):
+        for e in ents or []:
+            if e.type == MessageEntityType.CUSTOM_EMOJI and e.custom_emoji_id and text:
+                out.append((e.custom_emoji_id, e.extract_from(text)))
+    return out
+
+
 async def handle_updates(bot, cfg: Config, svc) -> bool:
     """Обрабатывает ожидающие команды. Возвращает True, если владелец попросил /scan."""
     try:
-        updates = await bot.get_updates(timeout=0, allowed_updates=["message"])
+        updates = await bot.get_updates(timeout=0, allowed_updates=["message", "channel_post"])
     except TelegramConflictError as e:
         log.warning("getUpdates недоступен (у токена настроен webhook или бот запущен ещё где-то): %s", e)
         return False
     want_scan = False
     for u in updates:
+        post = getattr(u, "channel_post", None)
+        if post is not None and _is_our_channel(post.chat, cfg):  # премиум-эмодзи из постов канала
+            for eid, ch in collect_custom_emoji(post):
+                if svc.db.add_emoji(eid, ch):
+                    log.info("запомнил эмодзи %s из канала", ch)
+            continue
         m = u.message
-        if not m or not m.text or not m.text.startswith("/") or m.chat.type != "private":
+        if not m or m.chat.type != "private":
+            continue
+        is_owner_chat = cfg.owner_id is not None and m.chat.id == cfg.owner_id
+        if is_owner_chat:  # владелец прислал сообщение с премиум-эмодзи: запоминаем для утренних постов
+            new = [(eid, ch) for eid, ch in collect_custom_emoji(m) if svc.db.add_emoji(eid, ch)]
+            if new:
+                try:
+                    await m.answer(f"Запомнил премиум-эмодзи: {' '.join(ch for _, ch in new)} (новых: {len(new)}). Буду использовать их в утренних постах.")
+                except Exception:
+                    log.exception("не удалось подтвердить эмодзи")
+        if not m.text or not m.text.startswith("/"):
             continue
         cmd = m.text.split()[0].split("@")[0].lower()
         is_owner = cfg.owner_id is not None and m.chat.id == cfg.owner_id
