@@ -68,7 +68,7 @@ def test_valid_text_blocks_pump_promises_profanity_foreign_numbers_and_spoilers(
     assert not valid_text(MorningText("Привет", "Это ебанутый рост", "реакции"), data)
     assert not valid_text(MorningText("Привет", "Биток вырос на 7% за сутки", "реакции"), data)  # числа нет в данных
     assert not valid_text(MorningText("Привет", "Это AAA, угадали?", "реакции"), data, hidden_ticker="AAA")
-    assert not valid_text(MorningText("x" * 80, "ок", "ок"), data)
+    assert not valid_text(MorningText("x" * 100, "ок", "ок"), data)
 
 
 def ok_reply(**kw):

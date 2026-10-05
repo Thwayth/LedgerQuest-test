@@ -139,13 +139,14 @@ class PostWriter:
             f"Тон этого поста: {tone}.\n\n"
             "RECENT (последние посты канала — не повторяйся):\n" + ("\n".join(f"- {r}" for r in recent) or "(пока нет)")
         )
+        fb = ""
         for attempt in (1, 2):
             try:
                 resp = self._cl().messages.create(
                     model=self.model,
                     max_tokens=4000,
                     system=SYSTEM,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": prompt + fb}],
                     output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": SCHEMA}},
                 )
                 if resp.stop_reason == "refusal":
@@ -158,6 +159,7 @@ class PostWriter:
                 if why is None:
                     return t
                 log.info("текст для %s не прошёл проверку (попытка %d): %s | %r", idea.symbol, attempt, why, f"{t.opinion} / {t.risk_line}"[:300])
+                fb = f"\n\nПРЕДЫДУЩИЙ ВАРИАНТ ОТКЛОНЁН: {why}. Напиши заново и исправь именно это."
             except Exception as e:
                 log.warning("не удалось получить текст от Claude для %s: %s", idea.symbol, e)
                 return None

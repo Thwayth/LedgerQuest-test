@@ -127,8 +127,9 @@ class FunWriter:
             return None
 
     def meme(self, recent: list[str], trends: list[str] | None = None, topics: list[str] | None = None) -> MemeSpec | None:
+        fb = ""
         for _ in (1, 2):
-            d = self._ask("meme", MEME_TASK, {"TRENDS": trends or [], "TOPICS": topics or []}, recent)
+            d = self._ask("meme", MEME_TASK + fb, {"TRENDS": trends or [], "TOPICS": topics or []}, recent)
             if d is None:
                 return None
             try:
@@ -141,12 +142,14 @@ class FunWriter:
             if why is None:
                 return m
             log.info("мем не прошёл проверку: %s | %r", why, f"{m.template}: {m.top} / {m.bottom} / {m.caption}"[:300])
+            fb = f"\n\nПРЕДЫДУЩИЙ ВАРИАНТ ОТКЛОНЁН: {why}. Придумай другой и исправь именно это."
         return None
 
     def fact(self, fact_text: str, recent: list[str]) -> FactPost | None:
         nums = _nums(fact_text)
+        fb = ""
         for _ in (1, 2):
-            d = self._ask("fact", FACT_TASK, {"fact": fact_text}, recent)
+            d = self._ask("fact", FACT_TASK + fb, {"fact": fact_text}, recent)
             if d is None:
                 return None
             try:
@@ -158,11 +161,13 @@ class FunWriter:
             if why is None:
                 return f
             log.info("факт не прошёл проверку: %s | %r", why, f"{f.card} / {f.comment}"[:300])
+            fb = f"\n\nПРЕДЫДУЩИЙ ВАРИАНТ ОТКЛОНЁН: {why}. Напиши заново и исправь именно это."
         return None
 
     def joke(self, recent: list[str], trends: list[str] | None = None, topics: list[str] | None = None) -> str | None:
+        fb = ""
         for _ in (1, 2):
-            d = self._ask("joke", JOKE_TASK, {"TRENDS": trends or [], "TOPICS": topics or []}, recent)
+            d = self._ask("joke", JOKE_TASK + fb, {"TRENDS": trends or [], "TOPICS": topics or []}, recent)
             if d is None:
                 return None
             joke = d.get("joke") if isinstance(d.get("joke"), str) else ""
@@ -170,6 +175,7 @@ class FunWriter:
             if why is None:
                 return joke.strip()
             log.info("шутка не прошла проверку: %s | %r", why, joke[:300])
+            fb = f"\n\nПРЕДЫДУЩИЙ ВАРИАНТ ОТКЛОНЁН: {why}. Придумай другую и исправь именно это."
         return None
 
     def image_caption(self, media_type: str, b64: str, recent: list[str]) -> str | None:

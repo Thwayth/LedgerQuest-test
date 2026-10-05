@@ -46,7 +46,7 @@ SYSTEM = """Ты пишешь утренний пост для закрытог�
 
 Верни JSON:
 - greeting: приветствие, 1 короткая фраза (до 60 символов).
-- body: основной текст, 2-4 предложения (до 480 символов).
+- body: основной текст, 2-4 предложения (до 550 символов).
 - hook: заход на реакции, 1 предложение (до 200 символов)."""
 
 SCHEMA = {
@@ -144,7 +144,7 @@ def _nums(s: str) -> list[float]:
 def reject_reason(t: MorningText, data: dict, hidden_ticker: str | None = None, slots: list[dict] | None = None) -> str | None:
     """Почему текст не подходит (None — подходит)."""
     allowed = _nums(json.dumps(data, ensure_ascii=False))
-    for name, s, cap in (("greeting", t.greeting, 60), ("body", t.body, 480), ("hook", t.hook, 200)):
+    for name, s, cap in (("greeting", t.greeting, 80), ("body", t.body, 650), ("hook", t.hook, 240)):
         if not placeholders_valid(s, slots or []):
             return f"{name}: плейсхолдер несуществующей реакции"
         s = PLACEHOLDER.sub("", s)
@@ -187,11 +187,12 @@ class MorningWriter:
             f"DATA:\n{json.dumps(data, ensure_ascii=False, indent=1)}\n\n"
             "RECENT (прошлые утренние посты, не повторяйся):\n" + ("\n".join(f"- {r}" for r in recent) or "(пока нет)")
         )
+        fb = ""
         for attempt in (1, 2):
             try:
                 resp = self._cl().messages.create(
                     model=self.model, max_tokens=4000, system=SYSTEM,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": prompt + fb}],
                     output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": SCHEMA}},
                 )
                 if resp.stop_reason == "refusal":
@@ -202,6 +203,7 @@ class MorningWriter:
                 if why is None:
                     return t
                 log.info("утренний текст не прошёл проверку (попытка %d): %s | %r", attempt, why, f"{t.greeting} / {t.body} / {t.hook}"[:300])
+                fb = f"\n\nПРЕДЫДУЩИЙ ВАРИАНТ ОТКЛОНЁН: {why}. Напиши заново и исправь именно это."
             except Exception as e:
                 log.warning("утренний текст от Claude: %s", e)
                 return None

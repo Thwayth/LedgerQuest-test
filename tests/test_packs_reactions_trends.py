@@ -218,3 +218,18 @@ def test_service_trends_cached_per_day_and_posts_use_premium_emoji(monkeypatch):
     assert '<tg-emoji emoji-id="777">😂</tg-emoji>' in svc.pub.texts[-1] or "<tg-emoji" in svc.pub.texts[-1]
     asyncio.run(svc.fun_post("fact"))
     assert "<tg-emoji" in svc.pub.posts[-1][1]  # подпись факта тоже с премиум-эмодзи
+
+
+def test_rejected_text_retry_carries_reason_back_to_claude():
+    def reply(opinion, hook="Ставьте реакции."):
+        return NS(stop_reason="end_turn", content=[NS(type="text", text=json.dumps({"greeting": "Привет, Прайд!", "body": opinion, "hook": hook}))])
+
+    long_body = "слово " * 140  # длиннее лимита
+    cl = FakeClient(reply(long_body), reply("Короткий и ясный текст."))
+    t = MorningWriter(client=cl).write({"kind": "mood"}, [])
+    assert t is not None and t.body == "Короткий и ясный текст."
+    second_prompt = cl.calls[1]["messages"][0]["content"]
+    assert "ПРЕДЫДУЩИЙ ВАРИАНТ ОТКЛОНЁН" in second_prompt and "длиннее" in second_prompt  # Claude знает, что исправлять
+    assert "ПРЕДЫДУЩИЙ" not in cl.calls[0]["messages"][0]["content"]
+    ok = MorningText("Привет", "слово " * 100, "ок")  # ~600 символов проходит новый лимит
+    assert valid_text(ok, {"kind": "mood"})
