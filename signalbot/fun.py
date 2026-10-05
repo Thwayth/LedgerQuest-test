@@ -73,14 +73,28 @@ def _nums(s: str) -> set[str]:
     return {x.replace(",", ".") for x in re.findall(r"\d+(?:[.,]\d+)?", s)}
 
 
-def clean_ok(s: str, cap: int, allow_empty: bool = False, allowed_numbers: set[str] | None = None) -> bool:
+def reject_reason(s: str, cap: int, allow_empty: bool = False, allowed_numbers: set[str] | None = None) -> str | None:
     if not s.strip():
-        return allow_empty
-    if len(s) > cap or "<" in s or ">" in s or PROFANITY.search(s) or POLITICS.search(s) or SENSITIVE.search(s):
-        return False
-    if any(b in s.lower() for b in BANNED + ("памп", "pump", "улетит")):
-        return False
-    return _nums(s) <= (allowed_numbers if allowed_numbers is not None else set())
+        return None if allow_empty else "пусто"
+    if len(s) > cap:
+        return f"длиннее {cap} символов ({len(s)})"
+    if "<" in s or ">" in s:
+        return "HTML-символы"
+    if PROFANITY.search(s):
+        return "мат"
+    if POLITICS.search(s) or SENSITIVE.search(s):
+        return "чувствительная тема"
+    bad = next((b for b in BANNED + ("памп", "pump", "улетит") if b in s.lower()), None)
+    if bad:
+        return f"запрещённое слово «{bad}»"
+    extra = _nums(s) - (allowed_numbers if allowed_numbers is not None else set())
+    if extra:
+        return f"числа вне данных {sorted(extra)}"
+    return None
+
+
+def clean_ok(s: str, cap: int, allow_empty: bool = False, allowed_numbers: set[str] | None = None) -> bool:
+    return reject_reason(s, cap, allow_empty, allowed_numbers) is None
 
 
 class FunWriter:
@@ -121,8 +135,12 @@ class FunWriter:
                 m = MemeSpec(d["template"], d["top"].strip(), d["bottom"].strip(), d["caption"].strip())
             except (KeyError, TypeError, AttributeError):
                 continue  # в ответе нет нужных полей: считаем попытку неудачной
-            if m.template in TEMPLATES and clean_ok(m.top, 70) and clean_ok(m.bottom, 70) and clean_ok(m.caption, 110, allow_empty=True):
+            why = ("шаблон" if m.template not in TEMPLATES else None) or next(
+                (f"{n}: {r}" for n, v, c, e in (("top", m.top, 70, False), ("bottom", m.bottom, 70, False), ("caption", m.caption, 110, True))
+                 if (r := reject_reason(v, c, allow_empty=e))), None)
+            if why is None:
                 return m
+            log.info("мем не прошёл проверку: %s | %r", why, f"{m.template}: {m.top} / {m.bottom} / {m.caption}"[:300])
         return None
 
     def fact(self, fact_text: str, recent: list[str]) -> FactPost | None:
@@ -135,8 +153,11 @@ class FunWriter:
                 f = FactPost(d["card"].strip(), d["comment"].strip())
             except (KeyError, TypeError, AttributeError):
                 continue
-            if clean_ok(f.card, 210, allowed_numbers=nums) and clean_ok(f.comment, 160):
+            why = next((f"{n}: {r}" for n, v, c, a in (("card", f.card, 210, nums), ("comment", f.comment, 160, None))
+                        if (r := reject_reason(v, c, allowed_numbers=a))), None)
+            if why is None:
                 return f
+            log.info("факт не прошёл проверку: %s | %r", why, f"{f.card} / {f.comment}"[:300])
         return None
 
     def joke(self, recent: list[str], trends: list[str] | None = None, topics: list[str] | None = None) -> str | None:
@@ -145,8 +166,10 @@ class FunWriter:
             if d is None:
                 return None
             joke = d.get("joke") if isinstance(d.get("joke"), str) else ""
-            if clean_ok(joke.strip(), 320):
+            why = reject_reason(joke.strip(), 320)
+            if why is None:
                 return joke.strip()
+            log.info("шутка не прошла проверку: %s | %r", why, joke[:300])
         return None
 
     def image_caption(self, media_type: str, b64: str, recent: list[str]) -> str | None:

@@ -95,13 +95,24 @@ def idea_facts(idea: Idea) -> dict:
     }
 
 
+def _reason(t: PostText) -> str | None:
+    for name, s, cap in (("opinion", t.opinion, MAX_OPINION), ("risk_line", t.risk_line, MAX_RISK)):
+        if not s:
+            return f"{name}: пусто"
+        if len(s) > cap:
+            return f"{name}: длиннее {cap} символов ({len(s)})"
+        if re.search(r"\d", s):
+            return f"{name}: цифры"
+        if "<" in s or ">" in s:
+            return f"{name}: HTML-символы"
+        bad = next((b for b in BANNED if b in s.lower()), None)
+        if bad:
+            return f"{name}: запрещённое слово «{bad}»"
+    return None
+
+
 def _valid(t: PostText) -> bool:
-    for s, cap in ((t.opinion, MAX_OPINION), (t.risk_line, MAX_RISK)):
-        if not s or len(s) > cap or re.search(r"\d", s) or "<" in s or ">" in s:
-            return False
-        if any(b in s.lower() for b in BANNED):
-            return False
-    return True
+    return _reason(t) is None
 
 
 class PostWriter:
@@ -143,9 +154,10 @@ class PostWriter:
                 raw = next(b.text for b in resp.content if b.type == "text")
                 data = json.loads(raw)
                 t = PostText(str(data["opinion"]).strip(), str(data["risk_line"]).strip())
-                if _valid(t):
+                why = _reason(t)
+                if why is None:
                     return t
-                log.info("текст для %s не прошёл проверку (попытка %d)", idea.symbol, attempt)
+                log.info("текст для %s не прошёл проверку (попытка %d): %s | %r", idea.symbol, attempt, why, f"{t.opinion} / {t.risk_line}"[:300])
             except Exception as e:
                 log.warning("не удалось получить текст от Claude для %s: %s", idea.symbol, e)
                 return None

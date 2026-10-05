@@ -141,21 +141,34 @@ def _nums(s: str) -> list[float]:
     return [float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[.,]\d+)?", s)]
 
 
-def valid_text(t: MorningText, data: dict, hidden_ticker: str | None = None, slots: list[dict] | None = None) -> bool:
+def reject_reason(t: MorningText, data: dict, hidden_ticker: str | None = None, slots: list[dict] | None = None) -> str | None:
+    """Почему текст не подходит (None — подходит)."""
     allowed = _nums(json.dumps(data, ensure_ascii=False))
-    for s, cap in ((t.greeting, 60), (t.body, 480), (t.hook, 200)):
+    for name, s, cap in (("greeting", t.greeting, 60), ("body", t.body, 480), ("hook", t.hook, 200)):
         if not placeholders_valid(s, slots or []):
-            return False  # плейсхолдер несуществующей реакции
+            return f"{name}: плейсхолдер несуществующей реакции"
         s = PLACEHOLDER.sub("", s)
-        if not s or len(s) > cap or "<" in s or ">" in s or PROFANITY.search(s):
-            return False
-        if any(b in s.lower() for b in BANNED + ("памп", "pump", "улетит", "x2", "х2")):
-            return False
-        if any(not any(abs(n - a) < 0.51 for a in allowed) for n in _nums(s)):
-            return False  # число, которого нет в данных
+        if not s:
+            return f"{name}: пусто"
+        if len(s) > cap:
+            return f"{name}: длиннее {cap} символов ({len(s)})"
+        if "<" in s or ">" in s:
+            return f"{name}: HTML-символы"
+        if PROFANITY.search(s):
+            return f"{name}: мат"
+        bad = next((b for b in BANNED + ("памп", "pump", "улетит", "x2", "х2") if b in s.lower()), None)
+        if bad:
+            return f"{name}: запрещённое слово «{bad}»"
+        foreign = [n for n in _nums(s) if not any(abs(n - a) < 0.51 for a in allowed)]
+        if foreign:
+            return f"{name}: числа вне данных {foreign}"
         if hidden_ticker and re.search(rf"\b{re.escape(hidden_ticker)}\b", s, re.I):
-            return False  # раскрыли скрытую монету раньше времени
-    return True
+            return f"{name}: раскрыт скрытый тикер"
+    return None
+
+
+def valid_text(t: MorningText, data: dict, hidden_ticker: str | None = None, slots: list[dict] | None = None) -> bool:
+    return reject_reason(t, data, hidden_ticker, slots) is None
 
 
 class MorningWriter:
@@ -185,9 +198,10 @@ class MorningWriter:
                     return None
                 raw = json.loads(next(b.text for b in resp.content if b.type == "text"))
                 t = MorningText(str(raw["greeting"]).strip(), str(raw["body"]).strip(), str(raw["hook"]).strip())
-                if valid_text(t, data, hidden_ticker, slots):
+                why = reject_reason(t, data, hidden_ticker, slots)
+                if why is None:
                     return t
-                log.info("утренний текст не прошёл проверку (попытка %d)", attempt)
+                log.info("утренний текст не прошёл проверку (попытка %d): %s | %r", attempt, why, f"{t.greeting} / {t.body} / {t.hook}"[:300])
             except Exception as e:
                 log.warning("утренний текст от Claude: %s", e)
                 return None
