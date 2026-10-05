@@ -54,3 +54,18 @@ def test_structure_marks_labels():
 
     marks = _structure_marks(make_trb_like())
     assert marks and {m[2] for m in marks} <= {"HH", "LH", "HL", "LL"}
+
+
+def test_log_scale_for_wide_price_range_and_no_label_crash():
+    from signalbot.config import StrategyParams
+    from signalbot.scanner import analyze
+
+    df = make_trb_like()
+    for col in ("open", "high", "low", "close"):
+        df.loc[df.index < 60, col] = df.loc[df.index < 60, col] * 2.5  # ранний пик в 4+ раза выше
+    idea = analyze(df, "AR/USDT:USDT", "okx", "1d", StrategyParams(min_score=0, max_distance_pct=14))
+    assert idea is not None
+    png = render_idea_chart(df, idea, ChartStyle(mascot_image=str(DEFAULT_MASCOT)))
+    assert png.startswith(PNG_MAGIC) and len(png) > 50_000
+    png_lin = render_idea_chart(df, idea, ChartStyle(log_ratio=0))  # выключение лог-шкалы тоже работает
+    assert png_lin.startswith(PNG_MAGIC)

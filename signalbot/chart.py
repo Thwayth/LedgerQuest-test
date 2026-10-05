@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
-from matplotlib.ticker import FuncFormatter, MaxNLocator  # noqa: E402
+from matplotlib.ticker import FuncFormatter, LogLocator, MaxNLocator, NullLocator  # noqa: E402
 
 from .levels import find_swings  # noqa: E402
 from .models import Idea, Side  # noqa: E402
@@ -45,6 +45,7 @@ class ChartStyle:
     structure_labels: bool = True        # HH / HL / LH / LL
     future_bars: int = 45                # место справа под стрелку и уровни
     candle_width: float = 0.62
+    log_ratio: float = 3.5               # логарифмическая шкала, если max/min цены больше
 
 
 def price_decimals(v: float) -> int:
@@ -116,7 +117,7 @@ def _fmt_axis(ax) -> None:
     ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: fmt_num(v, dec)))
 
 
-def _place_mascot(fig, path: str, df: pd.DataFrame, ax, ylim: tuple[float, float], xmax: int) -> None:
+def _place_mascot(fig, path: str, df: pd.DataFrame, ax, ylim: tuple[float, float], xmax: int, use_log: bool = False) -> None:
     img = plt.imread(path)
     ih, iw = img.shape[:2]
     fw, fh = fig.get_size_inches() * fig.dpi
@@ -126,7 +127,9 @@ def _place_mascot(fig, path: str, df: pd.DataFrame, ax, ylim: tuple[float, float
     # ужимаем талисман, если свечи слева поднимаются в его зону
     x_hi = -2 + (w - 0.012) / 0.90 * (xmax + 2)
     covered = df["high"].to_numpy()[: max(1, int(max(x_hi, 0)) + 1)]
-    yf = 0.075 + (float(covered.max()) - ylim[0]) / (ylim[1] - ylim[0]) * 0.80
+    cmax = float(covered.max())
+    frac = (np.log(cmax / ylim[0]) / np.log(ylim[1] / ylim[0])) if use_log else (cmax - ylim[0]) / (ylim[1] - ylim[0])
+    yf = 0.075 + frac * 0.80
     free = top - yf - 0.01
     s = float(np.clip(free / h, 0.82, 1.0))
     w2, h2 = w * s, h * s
@@ -160,9 +163,19 @@ def render_idea_chart(df: pd.DataFrame, idea: Idea, style: ChartStyle | None = N
         ymin, ymax = float(df["low"].min()), float(df["high"].max())
         extra = [p.price for p in idea.pools] + [v for v in (idea.invalidation, idea.entry_conservative) if v]
         ymin, ymax = min([ymin, *extra]), max([ymax, *extra])
-        pad = (ymax - ymin) * 0.05
-        ylim = (max(ymin - pad, 0.0), ymax + pad + (ymax - ymin) * 0.10)  # запас сверху под талисман
+        use_log = bool(style.log_ratio) and ymin > 0 and ymax / ymin > style.log_ratio
+        if use_log:
+            span = float(np.log(ymax / ymin))
+            ylim = (ymin * float(np.exp(-0.05 * span)), ymax * float(np.exp(0.15 * span)))  # запас сверху под талисман
+            ax.set_yscale("log")
+        else:
+            span = ymax - ymin
+            ylim = (max(ymin - span * 0.05, 0.0), ymax + span * 0.15)
         ax.set_ylim(*ylim)
+
+        def shift(price: float, frac: float) -> float:
+            """Сдвиг цены на долю высоты графика (в лог-шкале — мультипликативно)."""
+            return price * float(np.exp(frac * span)) if use_log else price + frac * span
 
         # --- зона пробоя
         z = idea.zone
@@ -172,12 +185,12 @@ def render_idea_chart(df: pd.DataFrame, idea: Idea, style: ChartStyle | None = N
 
         # --- EMA: сплошная / точками / пунктиром
         close = df["close"]
-        for span, color, ls, lw, skip in (
+        for ema_span, color, ls, lw, skip in (
             (21, "#f0b454", "-", 0.9, 5),
             (50, "#e8903a", (0, (1, 2)), 1.3, 10),
             (200, "#d9731f", (0, (5, 3)), 1.2, 60),
         ):
-            ema = close.ewm(span=span, adjust=False).mean().to_numpy().copy()
+            ema = close.ewm(span=ema_span, adjust=False).mean().to_numpy().copy()
             ema[:skip] = np.nan
             ax.plot(np.arange(n), ema, color=color, linestyle=ls, linewidth=lw, alpha=0.9, zorder=2)
 
@@ -188,34 +201,39 @@ def render_idea_chart(df: pd.DataFrame, idea: Idea, style: ChartStyle | None = N
         colors = np.where(up, UP, DOWN)
         ax.vlines(xs, l, h, colors=colors, linewidth=1.0, zorder=4)
         body_lo, body_hi = np.minimum(o, c), np.maximum(o, c)
-        min_body = (ylim[1] - ylim[0]) * 0.0007
+        min_body = body_lo * 0.002 if use_log else (ylim[1] - ylim[0]) * 0.0007
         ax.bar(xs, np.maximum(body_hi - body_lo, min_body), bottom=body_lo, width=style.candle_width, color=colors, zorder=5, linewidth=0)
 
         # --- структура рынка: HH / HL / LH / LL
         if style.structure_labels:
             span_x = max(8, n // 28)
-            yr = ylim[1] - ylim[0]
             for i, p, label, is_high in _structure_marks(df):
                 ax.plot([i - span_x / 2, i + span_x / 2], [p, p], color=AMBER, alpha=0.75, linewidth=1.0, linestyle=(0, (4, 3)), zorder=3)
-                ax.text(i, p + (yr * 0.012 if is_high else -yr * 0.012), label, color=AMBER, fontsize=10, ha="center",
+                ax.text(i, shift(p, 0.012 if is_high else -0.012), label, color=AMBER, fontsize=10, ha="center",
                         va="bottom" if is_high else "top", alpha=0.95, zorder=6)
 
         # --- уровни Entry / SL / TP (подписи справа над линией)
         fut0 = n + 2
-        yr = ylim[1] - ylim[0]
 
-        def level(price: float, label: str, color: str, long_from: int | None = None) -> None:
-            if long_from is not None:  # пул ликвидности: бледная линия от swing вправо
-                ax.plot([long_from, fut0], [price, price], color=color, alpha=0.30, linewidth=0.9, linestyle=(0, (1, 3)), zorder=2)
-            ax.plot([fut0, xmax], [price, price], color=color, linewidth=1.3, linestyle=(0, (4, 3)), zorder=3)
-            ax.text(xmax - 0.6, price + yr * 0.006, f"{label} {fmt_num(price)}", color=color, fontsize=11, ha="right", va="bottom", zorder=7)
+        def pos(price: float) -> float:
+            """Положение цены на графике, 0..1 (для разведения подписей)."""
+            return float(np.log(price / ylim[0]) / np.log(ylim[1] / ylim[0])) if use_log else (price - ylim[0]) / (ylim[1] - ylim[0])
 
-        for k, p in enumerate(idea.pools, 1):
-            level(p.price, f"TP{k}", AMBER, long_from=p.idx)
+        levels: list[tuple[float, str, str, int | None]] = [(p.price, f"TP{k}", AMBER, p.idx) for k, p in enumerate(idea.pools, 1)]
         if idea.entry_conservative:
-            level(idea.entry_conservative, "Entry", ENTRY_COLOR)
+            levels.append((idea.entry_conservative, "Entry", ENTRY_COLOR, None))
         if idea.invalidation:
-            level(idea.invalidation, "SL", SL_COLOR)
+            levels.append((idea.invalidation, "SL", SL_COLOR, None))
+        last_pos = None
+        for price, label, color, from_idx in sorted(levels, key=lambda t: -t[0]):
+            if from_idx is not None:  # пул ликвидности: бледная линия от swing вправо
+                ax.plot([from_idx, fut0], [price, price], color=color, alpha=0.30, linewidth=0.9, linestyle=(0, (1, 3)), zorder=2)
+            ax.plot([fut0, xmax], [price, price], color=color, linewidth=1.3, linestyle=(0, (4, 3)), zorder=3)
+            # подпись над линией; если выше уже стоит близкая — уводим под линию
+            below = last_pos is not None and last_pos - pos(price) < 0.045
+            ax.text(xmax - 0.6, shift(price, -0.006 if below else 0.006), f"{label} {fmt_num(price)}", color=color, fontsize=11,
+                    ha="right", va="top" if below else "bottom", zorder=7)
+            last_pos = pos(price) - (0.03 if below else 0.0)
 
         # --- стрелка-сценарий
         ax_x, ax_y = _scenario_path(idea, n, last_px, style)
@@ -240,9 +258,15 @@ def render_idea_chart(df: pd.DataFrame, idea: Idea, style: ChartStyle | None = N
 
         # --- ось Y справа: янтарная линия и цифры
         ax.yaxis.tick_right()
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=9, steps=[1, 2, 4, 5, 10]))
+        if use_log:
+            ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1, 2, 3, 5, 7), numticks=14))
+            ax.yaxis.set_minor_locator(NullLocator())
+            ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: fmt_num(v)))
+        else:
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=9, steps=[1, 2, 4, 5, 10]))
         ax.set_ylim(*ylim)
-        _fmt_axis(ax)
+        if not use_log:
+            _fmt_axis(ax)
         ax.tick_params(axis="y", colors=AMBER, labelsize=10, length=4, width=0.8, pad=8)
         for name, s in ax.spines.items():
             s.set_visible(name == "right")
@@ -269,7 +293,7 @@ def render_idea_chart(df: pd.DataFrame, idea: Idea, style: ChartStyle | None = N
         # --- талисман и водяной знак
         mascot = style.mascot_image
         if mascot and Path(mascot).exists():
-            _place_mascot(fig, mascot, df, ax, ylim, xmax)
+            _place_mascot(fig, mascot, df, ax, ylim, xmax, use_log)
         if style.watermark_image and Path(style.watermark_image).exists():
             wm = fig.add_axes([0.012, 0.085, 0.05, 0.08], zorder=20)
             wm.imshow(plt.imread(style.watermark_image))
