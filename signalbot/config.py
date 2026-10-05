@@ -48,6 +48,10 @@ class Config:
     disclaimer: bool = False
     use_context: bool = True
     writer_enabled: bool = True
+    fun_enabled: bool = True
+    fun_model: str = "claude-sonnet-5-5"
+    fun_slots: list[tuple[int, int, str]] = field(default_factory=lambda: [(10, 0, "meme"), (14, 30, "fact"), (18, 0, "mix")])
+    memes_dir: str = "assets/memes"
     morning_enabled: bool = True
     morning_hour_utc: int = 6
     reveal_hour_utc: int = 9
@@ -76,6 +80,20 @@ def _bool(v: str | None, default: bool) -> bool:
     if v is None or v == "":
         return default
     return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _slots(raw) -> list[tuple[int, int, str]]:
+    """[{time_msk: "13:00", kind: meme}] -> [(час UTC, минута, тип)]; МСК = UTC+3."""
+    if not raw:
+        return [(10, 0, "meme"), (14, 30, "fact"), (18, 0, "mix")]
+    out = []
+    for s in raw:
+        h, m = (int(x) for x in str(s["time_msk"]).split(":"))
+        kind = str(s.get("kind", "mix"))
+        if kind not in ("meme", "fact", "joke", "mix"):
+            raise ValueError(f"fun.slots: неизвестный тип {kind!r}")
+        out.append(((h - 3) % 24, m, kind))
+    return out
 
 
 def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = ".env") -> Config:
@@ -108,6 +126,10 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         disclaimer=bool(raw.get("caption", {}).get("disclaimer", False)),
         use_context=bool(raw.get("context", {}).get("enabled", True)),
         writer_enabled=bool(raw.get("writer", {}).get("enabled", True)),
+        fun_enabled=bool(raw.get("fun", {}).get("enabled", True)),
+        fun_model=str(raw.get("fun", {}).get("model", "claude-sonnet-5-5")),
+        fun_slots=_slots(raw.get("fun", {}).get("slots")),
+        memes_dir=str(raw.get("fun", {}).get("memes_dir", "assets/memes")),
         morning_enabled=bool(raw.get("morning", {}).get("enabled", True)),
         morning_hour_utc=(int(raw.get("morning", {}).get("hour_msk", 9)) - 3) % 24,  # МСК = UTC+3, без перехода на летнее время
         reveal_hour_utc=(int(raw.get("morning", {}).get("reveal_hour_msk", 12)) - 3) % 24,

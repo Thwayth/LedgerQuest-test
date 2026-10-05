@@ -8,6 +8,8 @@
     python -m signalbot.oneshot reset    # очистить идеи в базе (перед боевым запуском после тестов)
     python -m signalbot.oneshot morning  # утренний пост сейчас (в канал / в личку при DRY_RUN)
     python -m signalbot.oneshot morning-preview  # пробный утренний пост только владельцу
+    python -m signalbot.oneshot fun      # мем/шутка прямо сейчас
+    python -m signalbot.oneshot fun-preview  # пробные мем, факт и шутка только владельцу
 
 Расписание Actions гоняет `auto` каждые RUN_EVERY_MIN минут; скан и недельный отчёт
 выбираются по времени UTC из config.yaml. Команды бота (/scan, /stats) в этом режиме не работают.
@@ -17,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from .bot import build_bot
 from .commands import handle_updates
@@ -29,7 +31,7 @@ from .storage import Storage
 
 log = logging.getLogger("signalbot.oneshot")
 RUN_EVERY_MIN = 30  # частота cron в workflow
-MODES = ("auto", "scan", "track", "report", "getid", "preview", "reset", "morning", "morning-preview")
+MODES = ("auto", "scan", "track", "report", "getid", "preview", "reset", "morning", "morning-preview", "fun", "fun-preview")
 _WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
@@ -42,6 +44,12 @@ def scan_due(now: datetime, interval_min: int, window_min: int = RUN_EVERY_MIN) 
 def morning_due(now: datetime, hour_utc: int, last_day: str | None, window_h: int = 6) -> bool:
     """Утренний пост: с нужного часа и ещё window_h часов (на случай опоздания расписания GitHub), раз в сутки."""
     return hour_utc <= now.hour < hour_utc + window_h and last_day != now.strftime("%Y-%m-%d")
+
+
+def fun_due(now: datetime, hour_utc: int, minute: int, last_day: str | None, window_h: int = 4) -> bool:
+    """Слот ленты (мем/факт/шутка): с назначенного времени и ещё window_h часов, раз в сутки."""
+    start = now.replace(hour=hour_utc, minute=minute, second=0, microsecond=0)
+    return start <= now < start + timedelta(hours=window_h) and last_day != now.strftime("%Y-%m-%d")
 
 
 def report_due(now: datetime, weekday: str, hour: int, window_min: int = RUN_EVERY_MIN) -> bool:
@@ -83,6 +91,12 @@ async def run(mode: str, now: datetime | None = None) -> None:
         if mode == "morning-preview":
             await svc.morning_post(TelegramPublisher(bot, cfg.owner_id), remember=False)
             return
+        if mode == "fun-preview":
+            await svc.fun_preview(TelegramPublisher(bot, cfg.owner_id))
+            return
+        if mode == "fun":
+            await svc.fun_post("mix")
+            return
         if mode == "morning":
             await svc.morning_post()
             return
@@ -97,6 +111,17 @@ async def run(mode: str, now: datetime | None = None) -> None:
                     await svc.morning_post()
                 except Exception:
                     log.exception("утренний пост не удался")
+            if cfg.fun_enabled:
+                today = now.strftime("%Y-%m-%d")
+                for h, m, kind in cfg.fun_slots:  # не больше одного поста ленты за запуск
+                    key = f"fun:{h:02d}:{m:02d}"
+                    if fun_due(now, h, m, svc.db.kv_get(key)):
+                        try:
+                            await svc.fun_post(kind)
+                            svc.db.kv_set(key, today)
+                        except Exception:
+                            log.exception("пост ленты (%s) не удался", kind)
+                        break
             n_rev = await svc.send_due_reveals()
             if n_rev:
                 log.info("разгадок отправлено: %d", n_rev)

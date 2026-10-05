@@ -4,6 +4,7 @@ ccxt>=4.3
 pandas>=2.1
 numpy>=1.26
 matplotlib>=3.8
+pillow>=10
 apscheduler>=3.10,<4
 pyyaml>=6.0
 python-dotenv>=1.0

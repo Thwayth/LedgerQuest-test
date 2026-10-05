@@ -47,6 +47,15 @@ morning:
     - https://cointelegraph.com/rss
     - https://decrypt.co/feed
 
+fun:
+  enabled: true            # мемы, факты и шутки между сделками
+  model: claude-sonnet-5-5 # лёгкая творческая задача: Sonnet дешевле Opus
+  memes_dir: assets/memes  # свои картинки-мемы (jpg/png/webp), бот подпишет и выложит
+  slots:                   # время по Москве; kind: meme | fact | joke | mix (мем или шутка)
+    - {time_msk: "13:00", kind: meme}
+    - {time_msk: "17:30", kind: fact}
+    - {time_msk: "21:00", kind: mix}
+
 writer:
   enabled: true            # тексты постов пишет Claude (нужен секрет ANTHROPIC_API_KEY); без ключа — шаблоны
   model: claude-opus-5-5

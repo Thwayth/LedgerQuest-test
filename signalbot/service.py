@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import logging
+import random
 import time
 from datetime import datetime, timezone
+
+from html import escape
 
 from .caption import build_caption, plain_summary, update_text
 from .enrich import Context, MarketData
@@ -14,6 +19,9 @@ from .exchanges import TF_LABEL_RU, TF_MS, Exchanges
 from .lifecycle import Tracked, evaluate
 from .morning import (KIND_MOOD, KIND_NEWS, KIND_TEASER, MARK, TEASER_MIN_CHANGE, MorningWriter, build_data,
                       build_morning_html, choose_kind, collect_snapshot, pick_emojis, reveal_html, template_text)
+from .fun import FACT_COMMENTS, MARK as FMARK, MEME_CAPTIONS, FactPost, FunWriter, MemeSpec, pick_unused
+from .funbank import FACTS, JOKES, MEMES
+from .memes import prepare_user_image, render_card, render_meme
 from .news import fetch_headlines
 from .models import Idea
 from .publisher import Publisher
@@ -42,6 +50,7 @@ class Service:
         if writer is None and cfg.writer_enabled and PostWriter.available():
             writer = PostWriter(cfg.writer_model, cfg.writer_effort)
         self.writer = writer
+        self.fun_writer = FunWriter(cfg.fun_model, "low") if (cfg.fun_enabled and cfg.writer_enabled and PostWriter.available()) else None
         self.morning_writer = MorningWriter(cfg.writer_model, cfg.writer_effort) if (cfg.writer_enabled and PostWriter.available()) else None
         self._sem = asyncio.Semaphore(concurrency)
         self._scan_lock = asyncio.Lock()
@@ -223,6 +232,79 @@ class Service:
                 due = ts + max(1, (self.cfg.reveal_hour_utc - self.cfg.morning_hour_utc) % 24) * 3_600_000
                 self.db.add_reveal(chat_id, message_id, reveal_html(mover[0], mover[1], day, pick_emojis(self.db.emojis(), 1, day + "r")[0]), due)
         return True
+
+    # --- мемы, факты, шутки ---------------------------------------------------------------
+    def _used(self, key: str) -> list[int]:
+        try:
+            return list(json.loads(self.db.kv_get(key) or "[]"))
+        except ValueError:
+            return []
+
+    def _user_memes(self) -> list[str]:
+        from pathlib import Path
+
+        d = Path(self.cfg.memes_dir)
+        if not d.is_dir():
+            return []
+        return sorted(p.name for p in d.iterdir() if p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".gif"))
+
+    async def fun_post(self, kind: str = "mix", pub: Publisher | None = None, remember: bool = True) -> str:
+        """Один пост «для настроения»: мем, факт или шутка. Возвращает тип опубликованного поста."""
+        pub = pub or self.pub
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        rng = random.Random(f"{day}|{len(self.db.recent_posts(200))}|{kind}")
+        if kind == "mix":
+            kind = rng.choice(["meme", "joke"])
+        recent = [t[len(FMARK):][:140] for t in self.db.recent_posts(40) if t.startswith(FMARK)][-6:]
+        e = pick_emojis(self.db.emojis(), 1, f"{day}{kind}{rng.random()}")[0]
+        summary = ""
+        if kind == "fact":
+            idx, used = pick_unused(len(FACTS), self._used("fun_used_facts"), rng)
+            text = FACTS[idx][1]
+            fp = await asyncio.to_thread(self.fun_writer.fact, text, recent) if self.fun_writer else None
+            fp = fp or FactPost(text, rng.choice(FACT_COMMENTS))
+            png = await asyncio.to_thread(render_card, "ФАКТ", fp.card, rng.randrange(10**6), self.cfg.mascot_image)
+            await pub.post_photo(png, f"{e} {escape(fp.comment)}", "fact")
+            summary, mark_key, mark_val = f"факт: {fp.card}", "fun_used_facts", used
+        elif kind == "joke":
+            idx, used = pick_unused(len(JOKES), self._used("fun_used_jokes"), rng)
+            joke = await asyncio.to_thread(self.fun_writer.joke, recent) if self.fun_writer else None
+            await pub.post_text(f"{e} {escape(joke or JOKES[idx])}")
+            summary, mark_key, mark_val = f"шутка: {joke or JOKES[idx]}", "fun_used_jokes", used
+        else:
+            files = [f for f in self._user_memes() if f not in self._used_files()]
+            if files and rng.random() < 0.5:  # свои картинки пользователя
+                name = rng.choice(files)
+                png = await asyncio.to_thread(prepare_user_image, f"{self.cfg.memes_dir}/{name}")
+                cap = None
+                if self.fun_writer:
+                    cap = await asyncio.to_thread(self.fun_writer.image_caption, "image/jpeg", base64.standard_b64encode(png).decode(), recent)
+                await pub.post_photo(png, f"{e} {escape(cap)}" if cap else e, "meme")
+                summary, mark_key, mark_val = f"мем-файл {name}", "fun_used_files", self._used_files() + [name]
+            else:
+                idx, used = pick_unused(len(MEMES), self._used("fun_used_memes"), rng)
+                spec = await asyncio.to_thread(self.fun_writer.meme, recent) if self.fun_writer else None
+                if spec is None:
+                    spec = MemeSpec(*MEMES[idx], caption=rng.choice(MEME_CAPTIONS))
+                png = await asyncio.to_thread(render_meme, spec.template, spec.top, spec.bottom, rng.randrange(10**6), self.cfg.mascot_image)
+                await pub.post_photo(png, f"{e} {escape(spec.caption)}" if spec.caption else e, "meme")
+                summary, mark_key, mark_val = f"мем: {spec.top} / {spec.bottom}", "fun_used_memes", used
+        log.info("пост для настроения отправлен (%s)", kind)
+        if remember:
+            self.db.kv_set(mark_key, json.dumps(mark_val[-200:], ensure_ascii=False))
+            self.db.add_post(int(time.time() * 1000), FMARK + summary)
+        return kind
+
+    def _used_files(self) -> list[str]:
+        try:
+            return list(json.loads(self.db.kv_get("fun_used_files") or "[]"))
+        except ValueError:
+            return []
+
+    async def fun_preview(self, pub: Publisher) -> int:
+        for kind in ("meme", "fact", "joke"):
+            await self.fun_post(kind, pub, remember=False)
+        return 3
 
     async def send_due_reveals(self) -> int:
         n = 0
