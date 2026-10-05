@@ -29,7 +29,10 @@ from .scanner import analyze
 from .scoring import context_points
 from .stats import compute_stats, format_stats
 from .stickers import DEFAULT_CHANCE, SITUATIONS, StickerCatalog, StickerDescriber
+from .emojipacks import decorate, sync_emoji
+from .reactions import ReactionDescriber, reaction_slots, refresh_reactions
 from .storage import Storage
+from .trends import TrendScout
 from .writer import PostWriter
 
 log = logging.getLogger(__name__)
@@ -52,6 +55,8 @@ class Service:
             writer = PostWriter(cfg.writer_model, cfg.writer_effort)
         self.writer = writer
         self.stickers = StickerCatalog(db, StickerDescriber(cfg.fun_model) if (cfg.stickers_enabled and PostWriter.available()) else None)
+        self.reaction_describer = ReactionDescriber(cfg.fun_model) if PostWriter.available() else None
+        self.trend_scout = TrendScout(cfg.fun_model, use_claude=PostWriter.available() and cfg.writer_enabled)
         self.fun_writer = FunWriter(cfg.fun_model, "low") if (cfg.fun_enabled and cfg.writer_enabled and PostWriter.available()) else None
         self.morning_writer = MorningWriter(cfg.writer_model, cfg.writer_effort) if (cfg.writer_enabled and PostWriter.available()) else None
         self._sem = asyncio.Semaphore(concurrency)
@@ -143,7 +148,7 @@ class Service:
         if self.writer is not None:
             recent = [t[:160] for t in self.db.recent_posts(12) if not t.startswith(MARK)][-5:]
             text = await asyncio.to_thread(self.writer.write, idea, day, recent)
-        return build_caption(idea, day, self.cfg.disclaimer, text)
+        return self._deco(build_caption(idea, day, self.cfg.disclaimer, text))
 
     def _style(self) -> ChartStyle:
         return ChartStyle(
@@ -194,7 +199,7 @@ class Service:
         for ev in events:
             if t.chat_id and t.message_id:
                 try:
-                    await self.pub.reply(t.chat_id, t.message_id, update_text(t, ev))
+                    await self.pub.reply(t.chat_id, t.message_id, self._deco(update_text(t, ev)))
                     sit = {"BREAKOUT": "hype", "TP": "profit", "DONE": "celebrate", "STOP": "loss", "CANCEL": "shrug", "EXPIRED": "shrug"}.get(ev.kind)
                     if sit:
                         await self.maybe_sticker(sit, reply_to=(t.chat_id, t.message_id))
@@ -215,19 +220,20 @@ class Service:
         mover = snap.gainers[0] if snap and snap.gainers and snap.gainers[0][1] >= TEASER_MIN_CHANGE else None
         kind = choose_kind(day, self.db.kv_get("last_morning_kind"), bool(heads), bool(mover))
         reveal_msk = f"{(self.cfg.reveal_hour_utc + 3) % 24:02d}:00"
-        data = build_data(kind, snap, heads, fng, reveal_msk)
+        slots = reaction_slots(self.db)
+        data = build_data(kind, snap, heads, fng, reveal_msk, slots)
         hidden = mover[0] if (kind == KIND_TEASER and mover) else None
         recent = [t[len(MARK):][:200] for t in self.db.recent_posts(30) if t.startswith(MARK)][-4:]
         text = None
         if self.morning_writer is not None:
-            text = await asyncio.to_thread(self.morning_writer.write, data, recent, hidden)
+            text = await asyncio.to_thread(self.morning_writer.write, data, recent, hidden, slots)
         if text is None:  # нет ключа / сбой Claude: шаблоны (новости без Claude не пересказать — тогда настроение рынка)
             if kind == KIND_NEWS:
                 kind = KIND_MOOD
-                data = build_data(kind, snap, heads, fng, reveal_msk)
-            text = template_text(kind, data, day, self.cfg.audience)
+                data = build_data(kind, snap, heads, fng, reveal_msk, slots)
+            text = template_text(kind, data, day, self.cfg.audience, slots)
         emojis = pick_emojis(self.db.emojis(), 3, day)
-        chat_id, message_id = await pub.post_text(build_morning_html(text, emojis))
+        chat_id, message_id = await pub.post_text(self._deco(build_morning_html(text, emojis, slots)))
         await self.maybe_sticker("morning", pub)
         log.info("утренний пост отправлен (%s)", kind)
         if remember:
@@ -239,6 +245,34 @@ class Service:
                 due = ts + max(1, (self.cfg.reveal_hour_utc - self.cfg.morning_hour_utc) % 24) * 3_600_000
                 self.db.add_reveal(chat_id, message_id, reveal_html(mover[0], mover[1], day, pick_emojis(self.db.emojis(), 1, day + "r")[0]), due)
         return True
+
+    # --- эмодзи-паки, реакции канала, тренды -----------------------------------------------
+    def _deco(self, html: str) -> str:
+        """Обычные эмодзи в посте -> премиум-эмодзи из ваших паков (если паки подключены)."""
+        return decorate(html, self.db.emoji_map())
+
+    async def emoji_sync(self, bot) -> dict:
+        return await sync_emoji(bot, self.db)
+
+    async def refresh_reactions_now(self, bot, force: bool = False) -> int:
+        return await refresh_reactions(bot, self.db, self.cfg.channel_id, self.reaction_describer, force=force)
+
+    async def _trends(self) -> list[str]:
+        """Актуальные мемы и тренды: раз в сутки, кэш в базе."""
+        if not self.cfg.fun_trends:
+            return []
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        try:
+            cached = json.loads(self.db.kv_get("trends") or "{}")
+        except ValueError:
+            cached = {}
+        if cached.get("day") == day:
+            return cached.get("items", [])
+        items = await asyncio.to_thread(self.trend_scout.fetch, day)
+        if items:
+            self.db.kv_set("trends", json.dumps({"day": day, "items": items}, ensure_ascii=False))
+            log.info("тренды дня: %d", len(items))
+        return items
 
     # --- стикеры -----------------------------------------------------------------------
     async def maybe_sticker(self, situation: str, pub: Publisher | None = None, reply_to: tuple[int, int] | None = None, force: bool = False) -> bool:
@@ -309,12 +343,13 @@ class Service:
             fp = await asyncio.to_thread(self.fun_writer.fact, text, recent) if self.fun_writer else None
             fp = fp or FactPost(text, rng.choice(FACT_COMMENTS))
             png = await asyncio.to_thread(render_card, "ФАКТ", fp.card, rng.randrange(10**6), self.cfg.mascot_image)
-            await pub.post_photo(png, f"{e} {escape(fp.comment)}", "fact")
+            await pub.post_photo(png, self._deco(f"{e} {escape(fp.comment)}"), "fact")
             summary, mark_key, mark_val = f"факт: {fp.card}", "fun_used_facts", used
         elif kind == "joke":
             idx, used = pick_unused(len(JOKES), self._used("fun_used_jokes"), rng)
-            joke = await asyncio.to_thread(self.fun_writer.joke, recent) if self.fun_writer else None
-            await pub.post_text(f"{e} {escape(joke or JOKES[idx])}")
+            trends = await self._trends()
+            joke = await asyncio.to_thread(self.fun_writer.joke, recent, trends, self.cfg.fun_topics) if self.fun_writer else None
+            await pub.post_text(self._deco(f"{e} {escape(joke or JOKES[idx])}"))
             summary, mark_key, mark_val = f"шутка: {joke or JOKES[idx]}", "fun_used_jokes", used
         else:
             files = [f for f in self._user_memes() if f not in self._used_files()]
@@ -324,15 +359,16 @@ class Service:
                 cap = None
                 if self.fun_writer:
                     cap = await asyncio.to_thread(self.fun_writer.image_caption, "image/jpeg", base64.standard_b64encode(png).decode(), recent)
-                await pub.post_photo(png, f"{e} {escape(cap)}" if cap else e, "meme")
+                await pub.post_photo(png, self._deco(f"{e} {escape(cap)}" if cap else e), "meme")
                 summary, mark_key, mark_val = f"мем-файл {name}", "fun_used_files", self._used_files() + [name]
             else:
                 idx, used = pick_unused(len(MEMES), self._used("fun_used_memes"), rng)
-                spec = await asyncio.to_thread(self.fun_writer.meme, recent) if self.fun_writer else None
+                trends = await self._trends()
+                spec = await asyncio.to_thread(self.fun_writer.meme, recent, trends, self.cfg.fun_topics) if self.fun_writer else None
                 if spec is None:
                     spec = MemeSpec(*MEMES[idx], caption=rng.choice(MEME_CAPTIONS))
                 png = await asyncio.to_thread(render_meme, spec.template, spec.top, spec.bottom, rng.randrange(10**6), self.cfg.mascot_image)
-                await pub.post_photo(png, f"{e} {escape(spec.caption)}" if spec.caption else e, "meme")
+                await pub.post_photo(png, self._deco(f"{e} {escape(spec.caption)}" if spec.caption else e), "meme")
                 summary, mark_key, mark_val = f"мем: {spec.top} / {spec.bottom}", "fun_used_memes", used
         await self.maybe_sticker({"meme": "laugh", "joke": "laugh", "fact": "think"}[kind], pub)
         log.info("пост для настроения отправлен (%s)", kind)
@@ -356,7 +392,7 @@ class Service:
         n = 0
         for rid, chat_id, message_id, text in self.db.due_reveals(int(time.time() * 1000)):
             try:
-                await self.pub.reply(chat_id, message_id, text)
+                await self.pub.reply(chat_id, message_id, self._deco(text))
                 self.db.mark_reveal_sent(rid)
                 n += 1
             except Exception:

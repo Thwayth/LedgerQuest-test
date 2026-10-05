@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from .funbank import FACTS, JOKES, MEMES
 from .memes import TEMPLATES
 from .morning import PROFANITY
+from .trends import SENSITIVE
 from .writer import BANNED
 
 log = logging.getLogger(__name__)
@@ -20,7 +21,9 @@ SYSTEM = """Ты ведёшь ленту закрытого крипто-кан�
 
 Общие правила:
 - Живой разговорный русский, коротко, без канцелярита и без шаблонов ИИ.
-- Юмор самоироничный (про трейдеров, рынок, эмоции), без мата, оскорблений, политики, религии, насмешек над конкретными людьми, без шуток про потерю денег читателей.
+- Юмор современный, как в русскоязычном интернете и TikTok: коротко, абсурдно, самоиронично, с неожиданным поворотом. Никакого «бумерского» юмора и баянов вроде банального «купил на хаях, продал на лоях» без свежего угла. Если шутку надо объяснять, это плохая шутка.
+- Без мата, оскорблений, политики, религии, трагедий и сексуальных тем. Над конкретными людьми не издевайся и не приписывай им слов и поступков: допустима только лёгкая отсылка к известному мем-образу, без выдуманных фактов и цитат.
+- Блок TRENDS (если есть) — актуальные мемы и тренды. Используй формат или отсылку, только если это безобидно и по-настоящему сочетается с трейдингом. Блок TOPICS — любимые темы автора, берут как вдохновение, не обязательно в каждом посте.
 - Не обещай прибыль и рост, не давай торговых советов, не придумывай новости и факты.
 - Не пиши цифр (кроме случаев, где в задании прямо сказано использовать числа из факта).
 - Не повторяй заходы и шутки из блока RECENT.
@@ -29,6 +32,8 @@ SYSTEM = """Ты ведёшь ленту закрытого крипто-кан�
 MEME_TASK = f"""Придумай мем про крипту и трейдинг. Выбери шаблон из списка и напиши подписи.
 Шаблоны: {', '.join(TEMPLATES)}.
 - lion и chart:*: top и bottom — две короткие подписи (до 60 символов каждая), как в классических мемах («Я: …» / «Рынок: …»).
+- nobody: формат «Никто: / Абсолютно никто: / Я: …». top — первая строка (обычно «Никто:»), bottom — абсурдная панчлайн-строка («Я в три ночи: …»).
+- expectation: top — «ожидание» (всё идёт к луне), bottom — «реальность» (график падает), обе до 60 символов.
 - two_panel: top — как делать плохо, bottom — как делать хорошо (до 60 символов каждая).
 - Для chart:pump_dump на картинке помечено «Я купил» на пике, для chart:bleed_then_pump — «Я продал» на дне, для chart:staircase — «Я здесь» перед обвалом; подпись должна с этим сочетаться.
 Верни JSON: template, top, bottom, caption (необязательная подпись к посту: одна короткая фраза с юмором, до 100 символов, можно пустую строку)."""
@@ -71,7 +76,7 @@ def _nums(s: str) -> set[str]:
 def clean_ok(s: str, cap: int, allow_empty: bool = False, allowed_numbers: set[str] | None = None) -> bool:
     if not s.strip():
         return allow_empty
-    if len(s) > cap or "<" in s or ">" in s or PROFANITY.search(s) or POLITICS.search(s):
+    if len(s) > cap or "<" in s or ">" in s or PROFANITY.search(s) or POLITICS.search(s) or SENSITIVE.search(s):
         return False
     if any(b in s.lower() for b in BANNED + ("памп", "pump", "улетит")):
         return False
@@ -107,9 +112,9 @@ class FunWriter:
             log.warning("fun/%s: %s", kind, e)
             return None
 
-    def meme(self, recent: list[str]) -> MemeSpec | None:
+    def meme(self, recent: list[str], trends: list[str] | None = None, topics: list[str] | None = None) -> MemeSpec | None:
         for _ in (1, 2):
-            d = self._ask("meme", MEME_TASK, None, recent)
+            d = self._ask("meme", MEME_TASK, {"TRENDS": trends or [], "TOPICS": topics or []}, recent)
             if d is None:
                 return None
             try:
@@ -134,9 +139,9 @@ class FunWriter:
                 return f
         return None
 
-    def joke(self, recent: list[str]) -> str | None:
+    def joke(self, recent: list[str], trends: list[str] | None = None, topics: list[str] | None = None) -> str | None:
         for _ in (1, 2):
-            d = self._ask("joke", JOKE_TASK, None, recent)
+            d = self._ask("joke", JOKE_TASK, {"TRENDS": trends or [], "TOPICS": topics or []}, recent)
             if d is None:
                 return None
             joke = d.get("joke") if isinstance(d.get("joke"), str) else ""

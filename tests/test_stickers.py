@@ -161,7 +161,7 @@ def test_owner_sticker_is_remembered_and_others_ignored():
     asyncio.run(handle_updates(UpdBot(ups), cfg, svc))
     assert svc.db.sticker_sets() == ["pack1"]
     assert "Запомнил стикерпак «pack1»" in s1.sent[0] and "уже в моей коллекции" in s2.sent[0]
-    assert "кастомные эмодзи" in emo.sent[0] and stranger.sent == []
+    assert "эмодзи без пака" in emo.sent[0] and stranger.sent == []
     assert {s["unique_id"] for s in svc.db.stickers()} == {"s1", "s2"}
     assert stats.sent == ["Паков: 1"]
 

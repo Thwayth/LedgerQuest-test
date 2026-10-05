@@ -123,6 +123,8 @@ class StickerCatalog:
                 log.warning("пак %s недоступен: %s", name, e)
                 continue
             if str(getattr(st_set.sticker_type, "value", st_set.sticker_type)) != "regular":
+                if str(getattr(st_set.sticker_type, "value", st_set.sticker_type)) == "custom_emoji":
+                    self.db.add_emoji_set(name)  # пак премиум-эмодзи: пойдёт в пул эмодзи для постов
                 self.db.mark_set_synced(name, st_set.title)  # маски и кастомные эмодзи отправлять как стикеры нельзя
                 continue
             for s in st_set.stickers:

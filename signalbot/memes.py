@@ -17,8 +17,8 @@ SIZE = 1080
 AMBER, CREAM, RED = (245, 165, 36), (241, 230, 204), (232, 90, 60)
 FONT_PATH = Path(matplotlib.get_data_path()) / "fonts" / "ttf" / "DejaVuSans-Bold.ttf"
 DEFAULT_MASCOT = Path(__file__).resolve().parents[1] / "assets" / "mascot.png"
-TEMPLATES = ["lion", "chart:pump_dump", "chart:bleed_then_pump", "chart:sideways", "chart:staircase", "two_panel"]
-CHART_MARKERS = {"pump_dump": "Я купил", "bleed_then_pump": "Я продал", "staircase": "Я здесь", "sideways": None}
+TEMPLATES = ["lion", "chart:pump_dump", "chart:bleed_then_pump", "chart:sideways", "chart:staircase", "two_panel", "nobody", "expectation"]
+CHART_MARKERS = {"pump_dump": "Я купил", "bleed_then_pump": "Я продал", "staircase": "Я здесь", "sideways": None, "moon": None}
 
 
 def _font(size: int) -> ImageFont.FreeTypeFont:
@@ -97,13 +97,15 @@ def _chart_path(pattern: str, seed: int, n: int = 70) -> np.ndarray:
         y = np.where(t < 0.62, 0.72 - 0.55 * (t / 0.62), 0.17 + 0.78 * (np.clip(t - 0.62, 0, None) / 0.38) ** 1.6)
     elif pattern == "staircase":
         y = np.where(t < 0.7, 0.15 + 0.12 * np.floor(t / 0.7 * 6), 0.15 + 0.12 * 6 - 0.8 * np.clip((t - 0.7) / 0.1, 0, 1))
+    elif pattern == "moon":
+        y = 0.1 + 0.85 * t ** 2.4
     else:  # sideways
         y = 0.5 + 0.04 * np.sin(t * 22)
     y = y + rng.normal(0, 0.012 if pattern != "sideways" else 0.006, n)
     return np.clip(y, 0.04, 0.96)
 
 
-def _draw_chart(img: Image.Image, box, pattern: str, seed: int) -> None:
+def _draw_chart(img: Image.Image, box, pattern: str, seed: int, marker: bool = True) -> None:
     x0, y0, x1, y1 = box
     dr = ImageDraw.Draw(img, "RGBA")
     y = _chart_path(pattern, seed)
@@ -113,7 +115,7 @@ def _draw_chart(img: Image.Image, box, pattern: str, seed: int) -> None:
         dr.line([(x0, gy), (x1, gy)], fill=(255, 255, 255, 22), width=1)
     dr.polygon(pts + [(x1, y1), (x0, y1)], fill=(245, 165, 36, 40))
     dr.line(pts, fill=AMBER + (255,), width=7, joint="curve")
-    label = CHART_MARKERS[pattern]
+    label = CHART_MARKERS[pattern] if marker else None
     if label:
         i = {"pump_dump": 38, "bleed_then_pump": 43, "staircase": 48}[pattern]
         px, py = pts[i]
@@ -157,6 +159,24 @@ def render_meme(template: str, top: str, bottom: str, seed: int = 0, mascot_path
     dr = ImageDraw.Draw(img)
     if template == "two_panel":
         _two_panel(img, top, bottom, mascot_path)
+        return _png(img)
+    if template == "nobody":  # «Никто: / Абсолютно никто: / Я: ...»
+        _caption(dr, top, (60, 40, SIZE - 60, 160), 66, fill=(190, 180, 165), stroke=0, upper=False, valign="top")
+        _caption(dr, "Абсолютно никто:", (60, 165, SIZE - 60, 265), 66, fill=(190, 180, 165), stroke=0, upper=False, valign="top")
+        _caption(dr, bottom, (50, 290, SIZE - 50, 560), 82, valign="top")
+        m = _mascot(480, mascot_path)
+        if m is not None:
+            img.paste(m, ((SIZE - m.width) // 2, SIZE - 480 - 20), m)
+        return _png(img)
+    if template == "expectation":  # ожидание (график в космос) и реальность (график вниз)
+        for k, (label, cap, pat, col) in enumerate((("ОЖИДАНИЕ", top, "moon", AMBER), ("РЕАЛЬНОСТЬ", bottom, "pump_dump", RED))):
+            x0 = 40 + k * 520
+            dr.rounded_rectangle([x0, 60, x0 + 470, 150], 20, fill=col)
+            f = _font(50)
+            w = dr.textlength(label, font=f)
+            dr.text((x0 + (470 - w) / 2, 76), label, font=f, fill=(15, 15, 15))
+            _draw_chart(img, (x0 + 10, 210, x0 + 460, 640), pat, seed + k, marker=False)
+            _caption(dr, cap, (x0, 690, x0 + 470, 1030), 58, fill=CREAM, stroke=0, upper=False, valign="top")
         return _png(img)
     if template.startswith("chart:"):
         _draw_chart(img, (90, 300, SIZE - 90, 800), template.split(":", 1)[1], seed)

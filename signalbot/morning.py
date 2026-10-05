@@ -9,6 +9,7 @@ import re
 from dataclasses import dataclass, field
 from html import escape
 
+from .reactions import PLACEHOLDER, fill_placeholders, placeholders_valid
 from .writer import BANNED, DEFAULT_MODEL
 
 log = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ SYSTEM = """Ты пишешь утренний пост для закрытог�
   * mood — коротко про настроение рынка утром по DATA.market (BTC, ETH, индекс страха и жадности, лидеры роста/падения можно назвать по тикеру), с шуткой и вопросом аудитории;
   * teaser — в DATA.hidden_mover сказано, что одна монета из топа сильно растёт за сутки, НО её тикер скрыт. НЕ называй её и не намекай на название. Заинтригуй: предложи угадать и накидать реакций, скажи, что назовёшь монету в DATA.reveal_time по МСК. Не обещай продолжения роста, подчеркни, что это просто факт движения за сутки.
 - Эмодзи в greeting и body не используй (их добавит бот).
+- В DATA.reactions перечислены реакции, которые реально включены в канале (slot и meaning). Зовя подписчиков ставить реакции, пиши плейсхолдеры {R1}, {R2} вместо эмодзи и подбирай реакцию по смыслу (meaning), например «ставьте {R1}, если ждёте рост». Других эмодзи для голосования не используй. Если DATA.reactions нет, зови писать в комментариях.
 
 Верни JSON:
 - greeting: приветствие, 1 короткая фраза (до 60 символов).
@@ -110,8 +112,10 @@ def choose_kind(day: str, last_kind: str | None, has_news: bool, has_mover: bool
     return random.Random(int(hashlib.sha256(day.encode()).hexdigest()[:8], 16)).choice(kinds)
 
 
-def build_data(kind: str, snap: Snapshot | None, headlines: list[dict], fng: int | None, reveal_time_msk: str) -> dict:
+def build_data(kind: str, snap: Snapshot | None, headlines: list[dict], fng: int | None, reveal_time_msk: str, slots: list[dict] | None = None) -> dict:
     d: dict = {"kind": kind}
+    if slots:
+        d["reactions"] = [{"slot": s["slot"], "meaning": s["meaning"]} for s in slots]
     if kind == KIND_NEWS:
         d["headlines"] = headlines
     market: dict = {}
@@ -137,9 +141,12 @@ def _nums(s: str) -> list[float]:
     return [float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[.,]\d+)?", s)]
 
 
-def valid_text(t: MorningText, data: dict, hidden_ticker: str | None = None) -> bool:
+def valid_text(t: MorningText, data: dict, hidden_ticker: str | None = None, slots: list[dict] | None = None) -> bool:
     allowed = _nums(json.dumps(data, ensure_ascii=False))
     for s, cap in ((t.greeting, 60), (t.body, 480), (t.hook, 200)):
+        if not placeholders_valid(s, slots or []):
+            return False  # плейсхолдер несуществующей реакции
+        s = PLACEHOLDER.sub("", s)
         if not s or len(s) > cap or "<" in s or ">" in s or PROFANITY.search(s):
             return False
         if any(b in s.lower() for b in BANNED + ("памп", "pump", "улетит", "x2", "х2")):
@@ -162,7 +169,7 @@ class MorningWriter:
             self._client = anthropic.Anthropic(timeout=90.0, max_retries=2)
         return self._client
 
-    def write(self, data: dict, recent: list[str], hidden_ticker: str | None = None) -> MorningText | None:
+    def write(self, data: dict, recent: list[str], hidden_ticker: str | None = None, slots: list[dict] | None = None) -> MorningText | None:
         prompt = (
             f"DATA:\n{json.dumps(data, ensure_ascii=False, indent=1)}\n\n"
             "RECENT (прошлые утренние посты, не повторяйся):\n" + ("\n".join(f"- {r}" for r in recent) or "(пока нет)")
@@ -178,7 +185,7 @@ class MorningWriter:
                     return None
                 raw = json.loads(next(b.text for b in resp.content if b.type == "text"))
                 t = MorningText(str(raw["greeting"]).strip(), str(raw["body"]).strip(), str(raw["hook"]).strip())
-                if valid_text(t, data, hidden_ticker):
+                if valid_text(t, data, hidden_ticker, slots):
                     return t
                 log.info("утренний текст не прошёл проверку (попытка %d)", attempt)
             except Exception as e:
@@ -192,7 +199,7 @@ def _rng(*parts: object) -> random.Random:
     return random.Random(int(hashlib.sha256("|".join(map(str, parts)).encode()).hexdigest()[:12], 16))
 
 
-def template_text(kind: str, data: dict, day: str, audience: list[str]) -> MorningText:
+def template_text(kind: str, data: dict, day: str, audience: list[str], slots: list[dict] | None = None) -> MorningText:
     r = _rng("morning", day, kind)
     greeting = r.choice(GREETINGS).format(a=r.choice(audience))
     m = data.get("market", {})
@@ -219,9 +226,12 @@ def template_text(kind: str, data: dict, day: str, audience: list[str]) -> Morni
     else:
         body = r.choice([f"BTC за сутки {btc:+.1f}%, рынок топчется на месте, ждём импульс.",
                          f"Биток почти не двигается ({btc:+.1f}% за сутки), затишье перед чем-то."])
-    hook = r.choice(["Как настроение: ждёте рост или падение сегодня? Накидайте реакций.",
-                     "Реакциями покажите, кто сегодня в лонгах, а кто на диване.",
-                     "Расскажите в комментариях, что ждёте от рынка сегодня."])
+    hooks = ["Как настроение: ждёте рост или падение сегодня? Накидайте реакций.",
+             "Реакциями покажите, кто сегодня в лонгах, а кто на диване.",
+             "Расскажите в комментариях, что ждёте от рынка сегодня."]
+    if slots and len(slots) >= 2:  # реальные реакции канала
+        hooks += ["Ждёте рост — ставьте {R1}, ждёте падение — ставьте {R2}.", "{R1} если сегодня в лонге, {R2} если пока на диване."]
+    hook = r.choice(hooks)
     return MorningText(greeting, body, hook)
 
 
@@ -238,9 +248,11 @@ def pick_emojis(custom: list[tuple[str, str]], n: int, day: str) -> list[str]:
     return r.sample(STD_EMOJI, n)
 
 
-def build_morning_html(t: MorningText, emojis: list[str]) -> str:
+def build_morning_html(t: MorningText, emojis: list[str], slots: list[dict] | None = None) -> str:
     e1, e2, e3 = emojis[:3]
-    return f"{e1} <b>{escape(t.greeting)}</b>\n\n{escape(t.body)}\n\n{e2} {escape(t.hook)} {e3}"
+    body = fill_placeholders(escape(t.body), slots or [])
+    hook = fill_placeholders(escape(t.hook), slots or [])
+    return f"{e1} <b>{escape(t.greeting)}</b>\n\n{body}\n\n{e2} {hook} {e3}"
 
 
 def reveal_html(ticker: str, change: float, day: str, emoji: str) -> str:

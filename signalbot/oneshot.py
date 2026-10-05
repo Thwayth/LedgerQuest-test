@@ -96,6 +96,12 @@ async def run(mode: str, now: datetime | None = None) -> None:
                     log.info("стикеры: добавлено %d, размечено Claude %d", res["added"], res["described"])
             except Exception:
                 log.exception("синхронизация стикеров не удалась")
+        if mode != "report":
+            try:
+                await svc.emoji_sync(bot)  # паки премиум-эмодзи целиком
+                await svc.refresh_reactions_now(bot)  # реакции канала (раз в сутки)
+            except Exception:
+                log.exception("синхронизация эмодзи/реакций не удалась")
         if mode == "sticker-preview":
             await svc.sticker_preview(TelegramPublisher(bot, cfg.owner_id))
             return

@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sticker_sets (name TEXT PRIMARY KEY, title TEXT, synced INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS stickers (unique_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, set_name TEXT, emoji TEXT,
     tags TEXT NOT NULL DEFAULT '[]', description TEXT, described INTEGER NOT NULL DEFAULT 0, thumb_id TEXT);
-CREATE TABLE IF NOT EXISTS emoji (id TEXT PRIMARY KEY, char TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS emoji (id TEXT PRIMARY KEY, char TEXT NOT NULL, set_name TEXT);
+CREATE TABLE IF NOT EXISTS emoji_sets (name TEXT PRIMARY KEY, title TEXT, synced INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS reactions (key TEXT PRIMARY KEY, kind TEXT NOT NULL, char TEXT NOT NULL, set_name TEXT, thumb_id TEXT,
+    description TEXT, described INTEGER NOT NULL DEFAULT 0, ord INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS reveals (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
     text TEXT NOT NULL, due_ts INTEGER NOT NULL, sent INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS ix_ideas_symbol ON ideas(symbol);
@@ -65,6 +68,10 @@ class Storage:
         self._lock = threading.Lock()
         with self._lock:
             self._db.executescript(SCHEMA)
+            try:  # база из прошлых версий без колонки set_name
+                self._db.execute("ALTER TABLE emoji ADD COLUMN set_name TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     def add(self, t: Tracked) -> int:
         with self._lock:
@@ -176,12 +183,74 @@ class Storage:
             self._db.execute("INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
             self._db.commit()
 
-    def add_emoji(self, emoji_id: str, char: str) -> bool:
+    def add_emoji(self, emoji_id: str, char: str, set_name: str | None = None) -> bool:
         """Запоминает кастомное эмодзи. True, если оно новое."""
         with self._lock:
-            cur = self._db.execute("INSERT OR IGNORE INTO emoji (id, char) VALUES (?, ?)", (emoji_id, char))
+            cur = self._db.execute("INSERT OR IGNORE INTO emoji (id, char, set_name) VALUES (?, ?, ?)", (emoji_id, char, set_name))
+            if set_name and cur.rowcount == 0:
+                self._db.execute("UPDATE emoji SET set_name=? WHERE id=? AND set_name IS NULL", (set_name, emoji_id))
             self._db.commit()
             return cur.rowcount > 0
+
+    def emoji_map(self) -> dict[str, list[str]]:
+        """Обычный символ эмодзи (без вариационного селектора) -> id кастомных эмодзи с таким значением."""
+        out: dict[str, list[str]] = {}
+        with self._lock:
+            rows = self._db.execute("SELECT id, char FROM emoji ORDER BY rowid").fetchall()
+        for i, ch in rows:
+            out.setdefault(ch.replace("\ufe0f", ""), []).append(i)
+        return out
+
+    def unresolved_emoji_ids(self, limit: int = 200) -> list[str]:
+        with self._lock:
+            return [r[0] for r in self._db.execute("SELECT id FROM emoji WHERE set_name IS NULL LIMIT ?", (limit,)).fetchall()]
+
+    def set_emoji_set(self, emoji_id: str, set_name: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE emoji SET set_name=? WHERE id=?", (set_name, emoji_id))
+            self._db.commit()
+
+    def add_emoji_set(self, name: str) -> bool:
+        with self._lock:
+            cur = self._db.execute("INSERT OR IGNORE INTO emoji_sets (name) VALUES (?)", (name,))
+            self._db.commit()
+            return cur.rowcount > 0
+
+    def emoji_sets(self, only_unsynced: bool = False) -> list[str]:
+        with self._lock:
+            q = "SELECT name FROM emoji_sets" + (" WHERE synced=0" if only_unsynced else "") + " ORDER BY rowid"
+            return [r[0] for r in self._db.execute(q).fetchall()]
+
+    def mark_emoji_set_synced(self, name: str, title: str | None) -> None:
+        with self._lock:
+            self._db.execute("UPDATE emoji_sets SET synced=1, title=? WHERE name=?", (title, name))
+            self._db.commit()
+
+    # --- реакции канала ------------------------------------------------------------------
+    def replace_reactions(self, items: list[dict]) -> None:
+        """Список доступных реакций канала; описание уже разобранных сохраняется, исчезнувшие реакции удаляются."""
+        with self._lock:
+            keep = {i["key"] for i in items}
+            for (k,) in self._db.execute("SELECT key FROM reactions").fetchall():
+                if k not in keep:
+                    self._db.execute("DELETE FROM reactions WHERE key=?", (k,))
+            for n, i in enumerate(items):
+                if self._db.execute("SELECT 1 FROM reactions WHERE key=?", (i["key"],)).fetchone():
+                    self._db.execute("UPDATE reactions SET ord=?, thumb_id=COALESCE(?, thumb_id) WHERE key=?", (n, i.get("thumb_id"), i["key"]))
+                else:
+                    self._db.execute("INSERT INTO reactions (key, kind, char, set_name, thumb_id, description, described, ord) VALUES (?,?,?,?,?,?,?,?)",
+                                     (i["key"], i["kind"], i["char"], i.get("set_name"), i.get("thumb_id"), i.get("description"), int(bool(i.get("described"))), n))
+            self._db.commit()
+
+    def reactions(self) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT key, kind, char, set_name, thumb_id, description, described FROM reactions ORDER BY ord").fetchall()
+        return [dict(key=r[0], kind=r[1], char=r[2], set_name=r[3], thumb_id=r[4], description=r[5], described=bool(r[6])) for r in rows]
+
+    def set_reaction_description(self, key: str, description: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE reactions SET description=?, described=1 WHERE key=?", (description, key))
+            self._db.commit()
 
     def emojis(self) -> list[tuple[str, str]]:
         with self._lock:

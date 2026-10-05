@@ -54,6 +54,8 @@ class Config:
     fun_model: str = "claude-sonnet-5-5"
     fun_slots: list[tuple[int, int, str]] = field(default_factory=lambda: [(10, 0, "meme"), (14, 30, "fact"), (18, 0, "mix")])
     memes_dir: str = "assets/memes"
+    fun_trends: bool = True
+    fun_topics: list[str] = field(default_factory=list)
     morning_enabled: bool = True
     morning_hour_utc: int = 6
     reveal_hour_utc: int = 9
@@ -134,6 +136,8 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         fun_model=str(raw.get("fun", {}).get("model", "claude-sonnet-5-5")),
         fun_slots=_slots(raw.get("fun", {}).get("slots")),
         memes_dir=str(raw.get("fun", {}).get("memes_dir", "assets/memes")),
+        fun_trends=bool(raw.get("fun", {}).get("trends", True)),
+        fun_topics=[str(t) for t in (raw.get("fun", {}).get("topics") or [])],
         morning_enabled=bool(raw.get("morning", {}).get("enabled", True)),
         morning_hour_utc=(int(raw.get("morning", {}).get("hour_msk", 9)) - 3) % 24,  # МСК = UTC+3, без перехода на летнее время
         reveal_hour_utc=(int(raw.get("morning", {}).get("reveal_hour_msk", 12)) - 3) % 24,

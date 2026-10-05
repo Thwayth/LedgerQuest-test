@@ -21,9 +21,14 @@ def _is_our_channel(chat, cfg: Config) -> bool:
 
 def _remember_sticker(svc, st) -> str:
     kind = str(getattr(st.type, "value", st.type))
+    if kind == "custom_emoji":  # премиум-эмодзи: запоминаем пак целиком
+        if getattr(st, "custom_emoji_id", None):
+            svc.db.add_emoji(st.custom_emoji_id, st.emoji or "", getattr(st, "set_name", None))
+        if getattr(st, "set_name", None) and svc.db.add_emoji_set(st.set_name):
+            return f"Запомнил пак премиум-эмодзи «{st.set_name}». Подтяну все его эмодзи при ближайшем запуске и буду вставлять их в посты."
+        return "Этот пак премиум-эмодзи уже в моей коллекции." if getattr(st, "set_name", None) else "Это эмодзи без пака, запомнил только его."
     if kind != "regular" or not getattr(st, "set_name", None):
-        return ("Это не обычный стикер из пака (кастомные эмодзи или без пака). "
-                "Премиум-эмодзи для постов пришлите обычным текстом, а стикеры — из любого стикерпака.")
+        return "Это не обычный стикер из пака. Пришлите стикер из любого стикерпака или премиум-эмодзи."
     new_set = svc.db.add_sticker_set(st.set_name)
     thumb = st.thumbnail.file_id if getattr(st, "thumbnail", None) else None
     svc.db.upsert_sticker(st.file_unique_id, st.file_id, st.set_name, st.emoji, emoji_tags(st.emoji), thumb)
