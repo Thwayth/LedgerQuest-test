@@ -138,7 +138,10 @@ def build_data(kind: str, snap: Snapshot | None, headlines: list[dict], fng: int
 
 
 def _nums(s: str) -> list[float]:
-    return [float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[.,]\d+)?", s)]
+    """Числа из текста; «10 000» и «11,000» — это тысячи, а «3,5» — десятичная дробь."""
+    s = re.sub(r"(?<=\d)[ ,\u00a0](?=\d{3}(?!\d))", "", s)
+    s = re.sub(r"(?<=\d),(?=\d)", ".", s)
+    return [float(x) for x in re.findall(r"\d+(?:\.\d+)?", s)]
 
 
 def reject_reason(t: MorningText, data: dict, hidden_ticker: str | None = None, slots: list[dict] | None = None) -> str | None:

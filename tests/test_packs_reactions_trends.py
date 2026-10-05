@@ -233,3 +233,15 @@ def test_rejected_text_retry_carries_reason_back_to_claude():
     assert "ПРЕДЫДУЩИЙ" not in cl.calls[0]["messages"][0]["content"]
     ok = MorningText("Привет", "слово " * 100, "ок")  # ~600 символов проходит новый лимит
     assert valid_text(ok, {"kind": "mood"})
+
+
+def test_numbers_with_thousand_separators_are_not_split():
+    from signalbot.fun import _nums as fnums
+    from signalbot.morning import _nums
+
+    assert _nums("продала 10 000 BTC и купила 11,000, рост 3,5%") == [10000.0, 11000.0, 3.5]
+    assert fnums("22 мая 2010 года, 10 000 BTC") == {"22", "2010", "10000"}
+    data = {"headlines": [{"title": "Metaplanet sold 10,000 BTC and bought 11,000"}]}
+    t = MorningText("Привет", "Продала 10 000 биткоинов и выкупила 11 000.", "Ставьте реакции.")
+    assert valid_text(t, data)  # раньше «000» считалось числом вне данных
+    assert not valid_text(MorningText("Привет", "Продала 12 000 биткоинов.", "ок"), data)

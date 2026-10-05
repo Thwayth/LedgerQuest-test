@@ -70,7 +70,9 @@ class FactPost:
 
 
 def _nums(s: str) -> set[str]:
-    return {x.replace(",", ".") for x in re.findall(r"\d+(?:[.,]\d+)?", s)}
+    s = re.sub(r"(?<=\d)[ ,\u00a0](?=\d{3}(?!\d))", "", s)  # «10 000» -> 10000
+    s = re.sub(r"(?<=\d),(?=\d)", ".", s)
+    return set(re.findall(r"\d+(?:\.\d+)?", s))
 
 
 def reject_reason(s: str, cap: int, allow_empty: bool = False, allowed_numbers: set[str] | None = None) -> str | None:
