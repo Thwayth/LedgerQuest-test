@@ -42,7 +42,9 @@ def _retry(fn: Callable[[], Any], attempts: int = 4, base_delay: float = 1.0) ->
         try:
             return fn()
         except Exception as e:  # сетевые ошибки/rate limit ccxt
-            if i == attempts - 1:
+            msg = str(e)
+            geo_block = " 451 " in msg or " 403 " in msg  # блокировка по региону: повторы бесполезны
+            if i == attempts - 1 or geo_block:
                 raise
             delay = base_delay * 2**i
             log.warning("retry %s/%s after %s: %s", i + 1, attempts, delay, e)

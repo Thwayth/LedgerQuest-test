@@ -27,7 +27,7 @@ def utc_day_start_ms(now_ms: int) -> int:
 
 
 class Service:
-    def __init__(self, cfg: Config, ex: Exchanges, db: Storage, pub: Publisher, concurrency: int = 8):
+    def __init__(self, cfg: Config, ex: Exchanges, db: Storage, pub: Publisher, concurrency: int = 4):
         self.cfg, self.ex, self.db, self.pub = cfg, ex, db, pub
         self._sem = asyncio.Semaphore(concurrency)
         self._scan_lock = asyncio.Lock()
