@@ -16,6 +16,7 @@ import sys
 from datetime import datetime, timezone
 
 from .bot import build_bot
+from .commands import handle_updates
 from .config import Config, load_config
 from .exchanges import Exchanges
 from .publisher import TelegramPublisher
@@ -66,10 +67,11 @@ async def run(mode: str, now: datetime | None = None) -> None:
     try:
         svc = Service(cfg, Exchanges(cfg.exchanges), Storage(cfg.db_path), TelegramPublisher(bot, cfg.publish_target))
         auto = mode == "auto"
+        force_scan = await handle_updates(bot, cfg, svc) if mode in ("auto", "track", "scan") else False
         if mode in ("auto", "track"):
             n = await svc.track_once()
             log.info("трекинг: событий %d", n)
-        if mode == "scan" or (auto and scan_due(now, cfg.scan_interval_minutes)):
+        if mode == "scan" or force_scan or (auto and scan_due(now, cfg.scan_interval_minutes)):
             published = await svc.scan_once()
             log.info("скан: опубликовано %d", len(published))
         if mode == "report" or (auto and report_due(now, cfg.weekly_report_weekday, cfg.weekly_report_hour_utc)):
