@@ -44,7 +44,7 @@ def _rng(*parts: object) -> random.Random:
     return random.Random(int(h[:12], 16))
 
 
-def build_caption(idea: Idea, day: str, disclaimer: bool = True) -> str:
+def build_caption(idea: Idea, day: str, disclaimer: bool = False) -> str:
     """Шаблон поста; варианты фраз детерминированы по (тикер, день)."""
     r = _rng(idea.ticker, day, idea.side.value)
     head = f"<b>{escape(idea.ticker)}</b> {'🔥' if idea.side is Side.LONG else '📉'}"

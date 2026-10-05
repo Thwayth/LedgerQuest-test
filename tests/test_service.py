@@ -47,6 +47,7 @@ class FakeEx:
 def make_service():
     cfg = Config(owner_id=1, dry_run=True, watermark_text="T")
     cfg.strategy.min_score = 0
+    cfg.use_context = False
     ex, pub, db = FakeEx(), FakePub(), Storage()
     return Service(cfg, ex, db, pub), ex, pub, db
 

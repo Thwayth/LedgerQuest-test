@@ -50,3 +50,45 @@ def score_components(df: pd.DataFrame, side: Side, dist_pct: float, max_dist_pct
 
 def total_score(components: dict[str, float]) -> float:
     return round(float(sum(components.values())), 1)
+
+
+def context_points(side: Side, glob, sym) -> tuple[float, list[str]]:
+    """Поправка к скорингу по рыночному контексту, от -10 до +10 пунктов.
+
+    funding: толпа в лонгах — минус лонгу и плюс шорту (и наоборот);
+    OI: рост интереса при поджатии — топливо для пробоя, резкий спад — минус;
+    BTC: идея по тренду BTC плюс, против тренда минус; Fear & Greed — лёгкий контртренд.
+    """
+    long = side is Side.LONG
+    pts, notes = 0.0, []
+    f = getattr(sym, "funding_pct", None)
+    if f is not None:
+        crowd = f if long else -f  # >0: толпа на нашей стороне
+        if crowd >= 0.05:
+            pts -= 4; notes.append(f"funding {f:+.3f}%: толпа на стороне идеи (−4)")
+        elif crowd >= 0.02:
+            pts -= 2; notes.append(f"funding {f:+.3f}%: перегрев (−2)")
+        elif crowd <= -0.01:
+            pts += 3; notes.append(f"funding {f:+.3f}%: толпа против идеи (+3)")
+    oi = getattr(sym, "oi_change_7d_pct", None)
+    if oi is not None:
+        if oi >= 10:
+            pts += 3; notes.append(f"OI {oi:+.0f}% за 7д (+3)")
+        elif oi <= -15:
+            pts -= 2; notes.append(f"OI {oi:+.0f}% за 7д (−2)")
+    trend = getattr(glob, "btc_trend", None)
+    if trend:
+        aligned = trend == (1 if long else -1)
+        pts += 3 if aligned else -4
+        notes.append(f"BTC {'по' if aligned else 'против'} идеи (7д {glob.btc_7d_pct:+.1f}%) ({'+3' if aligned else '−4'})")
+    fg = getattr(glob, "fear_greed", None)
+    if fg is not None:
+        if fg >= 75:
+            d = -2 if long else 2
+        elif fg <= 25:
+            d = 2 if long else -2
+        else:
+            d = 0
+        if d:
+            pts += d; notes.append(f"Fear&Greed {fg} ({d:+d})")
+    return max(-10.0, min(10.0, pts)), notes

@@ -45,7 +45,9 @@ class Config:
     weekly_report_hour_utc: int = 9
 
     risk_per_trade_pct: float = 1.0
-    disclaimer: bool = True
+    disclaimer: bool = False
+    use_context: bool = True
+    mascot_image: str | None = None
     watermark_text: str = ""
     watermark_image: str | None = None
     db_path: str = "data/signalbot.sqlite3"
@@ -95,7 +97,9 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         weekly_report_weekday=str(sc.get("weekly_report_weekday", "mon")),
         weekly_report_hour_utc=int(sc.get("weekly_report_hour_utc", 9)),
         risk_per_trade_pct=float(raw.get("risk", {}).get("risk_per_trade_pct", 1.0)),
-        disclaimer=bool(raw.get("caption", {}).get("disclaimer", True)),
+        disclaimer=bool(raw.get("caption", {}).get("disclaimer", False)),
+        use_context=bool(raw.get("context", {}).get("enabled", True)),
+        mascot_image=c.get("mascot_image"),
         watermark_text=c.get("watermark_text") or "",
         watermark_image=c.get("watermark_image"),
         db_path=os.getenv("DB_PATH") or raw.get("db_path", "data/signalbot.sqlite3"),

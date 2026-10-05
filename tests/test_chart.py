@@ -1,4 +1,4 @@
-from signalbot.chart import ChartStyle, fmt_num, render_idea_chart
+from signalbot.chart import DEFAULT_MASCOT, ChartStyle, fmt_num, render_idea_chart
 from signalbot.levels import find_pools, find_zone
 from signalbot.models import Idea, Side
 from signalbot.synthetic import make_trb_like
@@ -28,5 +28,29 @@ def test_render_short_without_pools_does_not_crash():
 
 def test_fmt_num_russian_style():
     assert fmt_num(20748.0) == "20 748"
-    assert fmt_num(0.01234) == "0,0123"
-    assert fmt_num(1.5) == "1,50"
+    assert fmt_num(249.382) == "249.38"
+    assert fmt_num(1.5) == "1.5000"
+    assert fmt_num(0.01234) == "0.012340"
+
+
+def test_render_with_mascot_levels_and_structure_labels():
+    from signalbot.config import StrategyParams
+    from signalbot.scanner import analyze
+
+    df = make_trb_like()
+    idea = analyze(df, "TRB/USDT:USDT", "okx", "1d", StrategyParams(min_score=0))
+    assert idea and idea.entry_conservative and idea.invalidation
+    png = render_idea_chart(df, idea, ChartStyle(mascot_image=str(DEFAULT_MASCOT), structure_labels=True))
+    assert png.startswith(PNG_MAGIC) and len(png) > 50_000  # звёзды + талисман делают картинку тяжелее
+
+
+def test_missing_mascot_file_is_ignored():
+    df = make_trb_like()
+    assert render_idea_chart(df, _idea(df), ChartStyle(mascot_image="/no/such.png")).startswith(PNG_MAGIC)
+
+
+def test_structure_marks_labels():
+    from signalbot.chart import _structure_marks
+
+    marks = _structure_marks(make_trb_like())
+    assert marks and {m[2] for m in marks} <= {"HH", "LH", "HL", "LL"}

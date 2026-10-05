@@ -55,9 +55,9 @@ def test_caption_template_long_and_deterministic():
     c = build_caption(_idea(), "2026-10-04")
     assert c.startswith("<b>TRB</b> 🔥")
     assert "<blockquote>" in c and "</blockquote>" in c
-    assert "пул" in c and "Не финансовый совет" in c
+    assert "пул" in c and "Не финансовый совет" not in c  # по умолчанию без дисклеймера
     assert c == build_caption(_idea(), "2026-10-04")
-    assert "Не финансовый совет" not in build_caption(_idea(), "2026-10-04", disclaimer=False)
+    assert "Не финансовый совет" in build_caption(_idea(), "2026-10-04", disclaimer=True)
 
 
 def test_caption_short_and_variation():

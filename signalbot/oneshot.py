@@ -4,6 +4,7 @@
     python -m signalbot.oneshot scan     # принудительный скан
     python -m signalbot.oneshot track | report
     python -m signalbot.oneshot getid    # показать id чатов/каналов, где бот видел сообщения
+    python -m signalbot.oneshot preview  # 2 примера постов только владельцу (без базы и лимитов)
 
 Расписание Actions гоняет `auto` каждые RUN_EVERY_MIN минут; скан и недельный отчёт
 выбираются по времени UTC из config.yaml. Команды бота (/scan, /stats) в этом режиме не работают.
@@ -25,7 +26,7 @@ from .storage import Storage
 
 log = logging.getLogger("signalbot.oneshot")
 RUN_EVERY_MIN = 30  # частота cron в workflow
-MODES = ("auto", "scan", "track", "report", "getid")
+MODES = ("auto", "scan", "track", "report", "getid", "preview")
 _WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
 
@@ -66,6 +67,10 @@ async def run(mode: str, now: datetime | None = None) -> None:
     bot = build_bot(cfg)
     try:
         svc = Service(cfg, Exchanges(cfg.exchanges), Storage(cfg.db_path), TelegramPublisher(bot, cfg.publish_target))
+        if mode == "preview":
+            n = await svc.preview(TelegramPublisher(bot, cfg.owner_id), n=2)
+            log.info("preview: отправлено %d", n)
+            return
         auto = mode == "auto"
         force_scan = await handle_updates(bot, cfg, svc) if mode in ("auto", "track", "scan") else False
         if mode in ("auto", "track"):

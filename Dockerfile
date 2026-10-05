@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY signalbot ./signalbot
 COPY config.yaml .
+COPY assets ./assets
 
 # SQLite хранится в /app/data: монтируйте том, чтобы статистика переживала перезапуски
 VOLUME ["/app/data"]

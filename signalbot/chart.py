@@ -1,6 +1,7 @@
-"""Рендер графика-идеи в тёмной теме в стиле TradingView."""
+"""Рендер графика-идеи: тёмный «звёздный» стиль с янтарными свечами, EMA, уровнями Entry/SL/TP."""
 from __future__ import annotations
 
+import hashlib
 import io
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,20 +15,23 @@ import pandas as pd  # noqa: E402
 from matplotlib.patches import Rectangle  # noqa: E402
 from matplotlib.ticker import FuncFormatter, MaxNLocator  # noqa: E402
 
+from .levels import find_swings  # noqa: E402
 from .models import Idea, Side  # noqa: E402
 
-BG = "#131722"
-GRID = "#1e222d"
-TEXT = "#b2b5be"
-UP = "#26a69a"
-DOWN = "#ef5350"
-ZONE = "#9598a1"
-LINE = "#e0e3eb"
-ARROW = "#f0f3fa"
-UP_PCT = "#26a69a"
+BG = "#050505"
+UP = "#f1e6cc"        # растущие свечи: кремовые
+DOWN = "#f5a524"      # падающие: янтарные
+AMBER = "#f5a524"
+ORANGE = "#e8803a"
+SL_COLOR = "#ff6b3d"
+ENTRY_COLOR = "#f4f4f4"
+CREAM = "#eadfc8"
+DIM = "#b8a98a"
+FONT = "DejaVu Serif"
 
 MONTHS_RU = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июль", "Авг", "Сен", "Окт", "Ноя", "Дек"]
 EXCHANGE_NAMES = {"binance": "Binance", "bybit": "Bybit", "okx": "OKX"}
+DEFAULT_MASCOT = Path(__file__).resolve().parents[1] / "assets" / "mascot.png"
 
 
 @dataclass
@@ -36,21 +40,22 @@ class ChartStyle:
     height: int = 700
     dpi: int = 100
     watermark_text: str = ""
-    watermark_image: str | None = None  # путь к PNG-логотипу
-    future_bars: int = 45  # пустое место справа под стрелку
+    watermark_image: str | None = None   # маленький логотип слева внизу
+    mascot_image: str | None = None      # талисман слева сверху (None = выкл.)
+    structure_labels: bool = True        # HH / HL / LH / LL
+    future_bars: int = 45                # место справа под стрелку и уровни
     candle_width: float = 0.62
 
 
+def price_decimals(v: float) -> int:
+    v = abs(v)
+    return 0 if v >= 10000 else 1 if v >= 1000 else 2 if v >= 100 else 3 if v >= 10 else 4 if v >= 1 else 5 if v >= 0.1 else 6
+
+
 def fmt_num(v: float, decimals: int | None = None) -> str:
-    """20748.1 -> '20 748', 0.01234 -> '0,01234' (русский формат)."""
-    if decimals is None:
-        decimals = 0 if abs(v) >= 100 else 2 if abs(v) >= 1 else 4 if abs(v) >= 0.01 else 6
-    s = f"{v:,.{decimals}f}".replace(",", " ").replace(".", ",")
-    return s
-
-
-def _fmt_price_tick(v: float, _pos=None) -> str:
-    return fmt_num(v, 0 if abs(v) >= 100 else None)
+    """20748.1 -> '20 748', 249.382 -> '249.38', 0.01234 -> '0.012340' (точка — десятичный разделитель)."""
+    d = price_decimals(v) if decimals is None else decimals
+    return f"{v:,.{d}f}".replace(",", " ")
 
 
 def _title(idea: Idea, tf_label: str) -> str:
@@ -64,12 +69,70 @@ def _scenario_path(idea: Idea, n: int, last_px: float, style: ChartStyle) -> tup
     z = idea.zone
     edge = z.high if long else z.low
     target = idea.pools[0].price if idea.pools else edge * (1.15 if long else 0.85)
-    x0 = n - 1
-    fb = style.future_bars
+    x0, fb = n - 1, style.future_bars
     xs = [x0, x0 + fb * 0.22, x0 + fb * 0.38, x0 + fb * 0.80]
     breakout = edge + (edge - z.mid) * 0.35 if long else edge - (z.mid - edge) * 0.35
     ys = [last_px, breakout, z.mid + (edge - z.mid) * 0.15, target]
     return xs, ys
+
+
+def _structure_marks(df: pd.DataFrame, last: int = 7) -> list[tuple[int, float, str, bool]]:
+    """Последние swing-точки с метками HH/LH (максимумы) и HL/LL (минимумы)."""
+    sh, sl = find_swings(df)
+    pts = sorted([(i, True) for i in sh] + [(i, False) for i in sl])
+    prev_h = prev_l = None
+    marks: list[tuple[int, float, str, bool]] = []
+    for i, is_high in pts:
+        if is_high:
+            p = float(df["high"].iloc[i])
+            if prev_h is not None:
+                marks.append((i, p, "HH" if p > prev_h else "LH", True))
+            prev_h = p
+        else:
+            p = float(df["low"].iloc[i])
+            if prev_l is not None:
+                marks.append((i, p, "HL" if p > prev_l else "LL", False))
+            prev_l = p
+    return marks[-last:]
+
+
+def _draw_stars(bg, seed_key: str) -> None:
+    seed = int(hashlib.sha256(seed_key.encode()).hexdigest()[:8], 16)
+    rng = np.random.default_rng(seed)
+    n = 420
+    x, y = rng.random(n), rng.random(n)
+    size = rng.uniform(0.15, 2.2, n) ** 1.6
+    alpha = rng.uniform(0.15, 0.85, n)
+    warm = rng.random(n) < 0.22
+    colors = np.where(warm, "#f5a524", "#f3ead8")
+    rgba = np.array([matplotlib.colors.to_rgba(c, a) for c, a in zip(colors, alpha)])
+    bg.scatter(x, y, s=size, c=rgba, linewidths=0)
+
+
+def _fmt_axis(ax) -> None:
+    ticks = [t for t in ax.get_yticks() if ax.get_ylim()[0] <= t <= ax.get_ylim()[1]]
+    step = abs(ticks[1] - ticks[0]) if len(ticks) > 1 else 1.0
+    dec = 0 if step >= 1 else int(np.ceil(-np.log10(step)))
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _p: fmt_num(v, dec)))
+
+
+def _place_mascot(fig, path: str, df: pd.DataFrame, ax, ylim: tuple[float, float], xmax: int) -> None:
+    img = plt.imread(path)
+    ih, iw = img.shape[:2]
+    fw, fh = fig.get_size_inches() * fig.dpi
+    w = 0.27
+    h = w * fw * (ih / iw) / fh
+    top = 0.885
+    # ужимаем талисман, если свечи слева поднимаются в его зону
+    x_hi = -2 + (w - 0.012) / 0.90 * (xmax + 2)
+    covered = df["high"].to_numpy()[: max(1, int(max(x_hi, 0)) + 1)]
+    yf = 0.075 + (float(covered.max()) - ylim[0]) / (ylim[1] - ylim[0]) * 0.80
+    free = top - yf - 0.01
+    s = float(np.clip(free / h, 0.82, 1.0))
+    w2, h2 = w * s, h * s
+    m = fig.add_axes([0.0, top - h2, w2, h2], zorder=1)
+    m.imshow(img, interpolation="lanczos")
+    m.axis("off")
 
 
 def render_idea_chart(df: pd.DataFrame, idea: Idea, style: ChartStyle | None = None, tf_label: str = "1Д") -> bytes:
@@ -77,128 +140,145 @@ def render_idea_chart(df: pd.DataFrame, idea: Idea, style: ChartStyle | None = N
     df = df.reset_index(drop=True)
     n = len(df)
     long = idea.side is Side.LONG
-
-    fig = plt.figure(figsize=(style.width / style.dpi, style.height / style.dpi), dpi=style.dpi, facecolor=BG)
-    ax = fig.add_axes([0.012, 0.075, 0.90, 0.80], facecolor=BG)
-
-    xmax = n - 1 + style.future_bars
-    ax.set_xlim(-2, xmax)
-
-    # --- диапазон по Y: вся история + пулы + цель стрелки
-    lows, highs = df["low"].to_numpy(), df["high"].to_numpy()
-    ymin, ymax = float(lows.min()), float(highs.max())
-    for p in idea.pools:
-        ymax, ymin = max(ymax, p.price), min(ymin, p.price)
-    pad = (ymax - ymin) * 0.06
-    ax.set_ylim(max(ymin - pad, 0), ymax + pad)
-
-    # --- сетка
-    ax.grid(True, color=GRID, linewidth=0.8)
-    ax.set_axisbelow(True)
-
-    # --- зона (серая полоса на всю ширину от первого касания)
-    z = idea.zone
-    ax.add_patch(
-        Rectangle((-2, z.low), xmax + 2, z.high - z.low, facecolor=ZONE, alpha=0.28, edgecolor="none", zorder=1)
-    )
-
-    # --- пулы ликвидности: тонкие линии от swing вправо до края
-    for p in idea.pools:
-        ax.plot([p.idx, xmax], [p.price, p.price], color=LINE, linewidth=1.1, zorder=2, solid_capstyle="butt")
-        ax.plot([p.idx, p.idx], [p.price - pad * 0.0, p.price], color=LINE, linewidth=1.1, zorder=2)
-
-    # --- свечи
-    o, h, l, c = (df[k].to_numpy() for k in ("open", "high", "low", "close"))
-    up = c >= o
-    xs = np.arange(n)
-    colors = np.where(up, UP, DOWN)
-    ax.vlines(xs, l, h, colors=colors, linewidth=1.0, zorder=3)
-    body_lo, body_hi = np.minimum(o, c), np.maximum(o, c)
-    min_body = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.0007
-    body_h = np.maximum(body_hi - body_lo, min_body)
-    ax.bar(xs, body_h, bottom=body_lo, width=style.candle_width, color=colors, zorder=4, linewidth=0)
-
-    # --- стрелка-сценарий
+    c = df["close"].to_numpy()
     last_px = float(c[-1])
-    ax_x, ax_y = _scenario_path(idea, n, last_px, style)
-    ax.plot(ax_x[:-1], ax_y[:-1], color=ARROW, linewidth=1.5, zorder=6, solid_joinstyle="miter")
-    ax.annotate(
-        "",
-        xy=(ax_x[-1], ax_y[-1]),
-        xytext=(ax_x[-2], ax_y[-2]),
-        arrowprops=dict(arrowstyle="-|>", color=ARROW, linewidth=1.5, mutation_scale=16, shrinkA=0, shrinkB=0),
-        zorder=6,
-    )
 
-    # --- ось X: русские месяцы, январь -> год
-    ts = pd.to_datetime(df["ts"], unit="ms") if np.issubdtype(df["ts"].dtype, np.integer) else pd.to_datetime(df["ts"])
-    tick_x, tick_l = [], []
-    prev_m = None
-    for i, t in enumerate(ts):
-        key = (t.year, t.month)
-        if key != prev_m and t.day <= 28:
-            if prev_m is not None or t.day <= 3:
-                tick_x.append(i)
-                tick_l.append(str(t.year) if t.month == 1 else MONTHS_RU[t.month - 1])
-            prev_m = key
-    ax.set_xticks(tick_x)
-    ax.set_xticklabels(tick_l)
-    ax.tick_params(axis="x", colors=TEXT, labelsize=10, length=0, pad=8)
+    with plt.rc_context({"font.family": FONT}):
+        fig = plt.figure(figsize=(style.width / style.dpi, style.height / style.dpi), dpi=style.dpi, facecolor=BG)
 
-    # --- ось Y справа
-    ax.yaxis.tick_right()
-    ax.yaxis.set_major_locator(MaxNLocator(nbins=9, steps=[1, 2, 4, 5, 10]))
-    ax.yaxis.set_major_formatter(FuncFormatter(_fmt_price_tick))
-    ax.tick_params(axis="y", colors=TEXT, labelsize=10, length=0, pad=10)
-    for s in ax.spines.values():
-        s.set_visible(False)
+        bg = fig.add_axes([0, 0, 1, 1], zorder=0, facecolor=BG)
+        bg.set_xlim(0, 1)
+        bg.set_ylim(0, 1)
+        bg.axis("off")
+        _draw_stars(bg, f"{idea.symbol}|{idea.timeframe}|{n}")
 
-    # --- плашка текущей цены
-    badge_color = UP if up[-1] else DOWN
-    ax.axhline(last_px, color=badge_color, linewidth=0.8, linestyle=(0, (1, 2)), zorder=2)
-    ax.annotate(
-        fmt_num(last_px),
-        xy=(1.0, last_px),
-        xycoords=("axes fraction", "data"),
-        xytext=(4, 0),
-        textcoords="offset points",
-        color="white",
-        fontsize=10,
-        fontweight="bold",
-        va="center",
-        ha="left",
-        bbox=dict(boxstyle="round,pad=0.25", fc=badge_color, ec="none"),
-        zorder=10,
-        annotation_clip=False,
-    )
+        ax = fig.add_axes([0.012, 0.075, 0.90, 0.80], zorder=3, facecolor="none")
+        xmax = n - 1 + style.future_bars
+        ax.set_xlim(-2, xmax)
 
-    # --- заголовок и цена
-    fig.text(0.014, 0.945, _title(idea, tf_label), color="#d1d4dc", fontsize=13, fontweight="bold", va="center")
-    sign = "+" if idea.change_abs >= 0 else "−"
-    chg_color = UP_PCT if idea.change_abs >= 0 else DOWN
-    fig.text(0.014, 0.905, fmt_num(last_px), color=chg_color, fontsize=12, fontweight="bold", va="center")
-    fig.text(
-        0.014 + 0.012 + 0.0075 * len(fmt_num(last_px)),
-        0.905,
-        f"{sign}{fmt_num(abs(idea.change_abs))} ({sign}{fmt_num(abs(idea.change_pct), 2)}%)",
-        color=chg_color,
-        fontsize=11,
-        va="center",
-    )
+        # --- диапазон по Y
+        ymin, ymax = float(df["low"].min()), float(df["high"].max())
+        extra = [p.price for p in idea.pools] + [v for v in (idea.invalidation, idea.entry_conservative) if v]
+        ymin, ymax = min([ymin, *extra]), max([ymax, *extra])
+        pad = (ymax - ymin) * 0.05
+        ylim = (max(ymin - pad, 0.0), ymax + pad + (ymax - ymin) * 0.10)  # запас сверху под талисман
+        ax.set_ylim(*ylim)
 
-    # --- водяной знак (слева внизу)
-    if style.watermark_image and Path(style.watermark_image).exists():
-        img = plt.imread(style.watermark_image)
-        wm = fig.add_axes([0.012, 0.085, 0.05, 0.08], zorder=20)
-        wm.imshow(img)
-        wm.axis("off")
-    elif style.watermark_text:
-        ax.text(
-            0.012, 0.045, style.watermark_text, transform=ax.transAxes, color="#d1d4dc", alpha=0.75,
-            fontsize=16, fontweight="bold", zorder=20,
-        )
+        # --- зона пробоя
+        z = idea.zone
+        ax.add_patch(Rectangle((-2, z.low), xmax + 2, z.high - z.low, facecolor=AMBER, alpha=0.10, edgecolor="none", zorder=1))
+        for edge in (z.low, z.high):
+            ax.plot([-2, xmax], [edge, edge], color=AMBER, alpha=0.35, linewidth=0.8, linestyle=(0, (4, 4)), zorder=1)
 
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", facecolor=BG, dpi=style.dpi)
-    plt.close(fig)
+        # --- EMA: сплошная / точками / пунктиром
+        close = df["close"]
+        for span, color, ls, lw, skip in (
+            (21, "#f0b454", "-", 0.9, 5),
+            (50, "#e8903a", (0, (1, 2)), 1.3, 10),
+            (200, "#d9731f", (0, (5, 3)), 1.2, 60),
+        ):
+            ema = close.ewm(span=span, adjust=False).mean().to_numpy().copy()
+            ema[:skip] = np.nan
+            ax.plot(np.arange(n), ema, color=color, linestyle=ls, linewidth=lw, alpha=0.9, zorder=2)
+
+        # --- свечи
+        o, h, l = df["open"].to_numpy(), df["high"].to_numpy(), df["low"].to_numpy()
+        up = c >= o
+        xs = np.arange(n)
+        colors = np.where(up, UP, DOWN)
+        ax.vlines(xs, l, h, colors=colors, linewidth=1.0, zorder=4)
+        body_lo, body_hi = np.minimum(o, c), np.maximum(o, c)
+        min_body = (ylim[1] - ylim[0]) * 0.0007
+        ax.bar(xs, np.maximum(body_hi - body_lo, min_body), bottom=body_lo, width=style.candle_width, color=colors, zorder=5, linewidth=0)
+
+        # --- структура рынка: HH / HL / LH / LL
+        if style.structure_labels:
+            span_x = max(8, n // 28)
+            yr = ylim[1] - ylim[0]
+            for i, p, label, is_high in _structure_marks(df):
+                ax.plot([i - span_x / 2, i + span_x / 2], [p, p], color=AMBER, alpha=0.75, linewidth=1.0, linestyle=(0, (4, 3)), zorder=3)
+                ax.text(i, p + (yr * 0.012 if is_high else -yr * 0.012), label, color=AMBER, fontsize=10, ha="center",
+                        va="bottom" if is_high else "top", alpha=0.95, zorder=6)
+
+        # --- уровни Entry / SL / TP (подписи справа над линией)
+        fut0 = n + 2
+        yr = ylim[1] - ylim[0]
+
+        def level(price: float, label: str, color: str, long_from: int | None = None) -> None:
+            if long_from is not None:  # пул ликвидности: бледная линия от swing вправо
+                ax.plot([long_from, fut0], [price, price], color=color, alpha=0.30, linewidth=0.9, linestyle=(0, (1, 3)), zorder=2)
+            ax.plot([fut0, xmax], [price, price], color=color, linewidth=1.3, linestyle=(0, (4, 3)), zorder=3)
+            ax.text(xmax - 0.6, price + yr * 0.006, f"{label} {fmt_num(price)}", color=color, fontsize=11, ha="right", va="bottom", zorder=7)
+
+        for k, p in enumerate(idea.pools, 1):
+            level(p.price, f"TP{k}", AMBER, long_from=p.idx)
+        if idea.entry_conservative:
+            level(idea.entry_conservative, "Entry", ENTRY_COLOR)
+        if idea.invalidation:
+            level(idea.invalidation, "SL", SL_COLOR)
+
+        # --- стрелка-сценарий
+        ax_x, ax_y = _scenario_path(idea, n, last_px, style)
+        ax.plot(ax_x[:-1], ax_y[:-1], color=CREAM, linewidth=1.6, zorder=8, solid_joinstyle="miter")
+        ax.annotate("", xy=(ax_x[-1], ax_y[-1]), xytext=(ax_x[-2], ax_y[-2]),
+                    arrowprops=dict(arrowstyle="-|>", color=CREAM, linewidth=1.6, mutation_scale=16, shrinkA=0, shrinkB=0), zorder=8)
+
+        # --- ось X: русские месяцы, январь -> год
+        ts = pd.to_datetime(df["ts"], unit="ms") if np.issubdtype(df["ts"].dtype, np.integer) else pd.to_datetime(df["ts"])
+        tick_x, tick_l = [], []
+        prev_m = None
+        for i, t in enumerate(ts):
+            key = (t.year, t.month)
+            if key != prev_m and t.day <= 28:
+                if prev_m is not None or t.day <= 3:
+                    tick_x.append(i)
+                    tick_l.append(str(t.year) if t.month == 1 else MONTHS_RU[t.month - 1])
+                prev_m = key
+        ax.set_xticks(tick_x)
+        ax.set_xticklabels(tick_l)
+        ax.tick_params(axis="x", colors=DIM, labelsize=10, length=0, pad=8)
+
+        # --- ось Y справа: янтарная линия и цифры
+        ax.yaxis.tick_right()
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=9, steps=[1, 2, 4, 5, 10]))
+        ax.set_ylim(*ylim)
+        _fmt_axis(ax)
+        ax.tick_params(axis="y", colors=AMBER, labelsize=10, length=4, width=0.8, pad=8)
+        for name, s in ax.spines.items():
+            s.set_visible(name == "right")
+        ax.spines["right"].set_color(AMBER)
+        ax.spines["right"].set_linewidth(0.9)
+        ax.spines["right"].set_alpha(0.8)
+
+        # --- плашка текущей цены
+        ax.axhline(last_px, color=AMBER, linewidth=0.7, linestyle=(0, (1, 2)), alpha=0.8, zorder=2)
+        ax.annotate(fmt_num(last_px), xy=(1.0, last_px), xycoords=("axes fraction", "data"), xytext=(6, 0),
+                    textcoords="offset points", color="#111", fontsize=10, fontweight="bold", va="center", ha="left",
+                    bbox=dict(boxstyle="square,pad=0.3", fc=AMBER, ec="none"), zorder=10, annotation_clip=False)
+
+        # --- заголовок и цена
+        fig.text(0.014, 0.945, _title(idea, tf_label), color=CREAM, fontsize=13, fontweight="bold", va="center", zorder=10)
+        sign = "+" if idea.change_abs >= 0 else "−"
+        chg_color = UP if idea.change_abs >= 0 else DOWN
+        price_txt = fmt_num(last_px)
+        fig.text(0.014, 0.905, price_txt, color=chg_color, fontsize=12, fontweight="bold", va="center", zorder=10)
+        fig.text(0.014 + 0.012 + 0.0085 * len(price_txt), 0.905,
+                 f"{sign}{fmt_num(abs(idea.change_abs))} ({sign}{abs(idea.change_pct):.2f}%)",
+                 color=chg_color, fontsize=11, va="center", zorder=10)
+
+        # --- талисман и водяной знак
+        mascot = style.mascot_image
+        if mascot and Path(mascot).exists():
+            _place_mascot(fig, mascot, df, ax, ylim, xmax)
+        if style.watermark_image and Path(style.watermark_image).exists():
+            wm = fig.add_axes([0.012, 0.085, 0.05, 0.08], zorder=20)
+            wm.imshow(plt.imread(style.watermark_image))
+            wm.axis("off")
+        elif style.watermark_text:
+            ax.text(0.012, 0.045, style.watermark_text, transform=ax.transAxes, color=CREAM, alpha=0.7,
+                    fontsize=16, fontweight="bold", zorder=20)
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", facecolor=BG, dpi=style.dpi)
+        plt.close(fig)
     return buf.getvalue()

@@ -30,10 +30,14 @@ risk:
   risk_per_trade_pct: 1.0
 
 caption:
-  disclaimer: true
+  disclaimer: false
 
 chart:
-  watermark_text: "LedgerQuest"
-  watermark_image: null    # путь к PNG-логотипу (приоритетнее текста)
+  mascot_image: assets/mascot.png   # талисман слева сверху; null — выключить
+  watermark_text: ""
+  watermark_image: null    # маленький логотип слева внизу (PNG)
+
+context:
+  enabled: true            # funding, открытый интерес, тренд BTC, Fear & Greed
 
 db_path: data/signalbot.sqlite3

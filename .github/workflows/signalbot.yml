@@ -9,7 +9,7 @@ on:
         description: "Режим (auto — как по расписанию)"
         type: choice
         default: auto
-        options: [auto, scan, track, report, getid]
+        options: [auto, scan, track, report, getid, preview]
 
 permissions:
   contents: write                # сохранять базу в ветку bot-state
