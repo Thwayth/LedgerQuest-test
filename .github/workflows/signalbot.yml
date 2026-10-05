@@ -1,0 +1,63 @@
+name: signalbot
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"      # каждые 30 минут (UTC); GitHub может опаздывать на несколько минут
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Режим (auto — как по расписанию)"
+        type: choice
+        default: auto
+        options: [auto, scan, track, report, getid]
+
+permissions:
+  contents: write                # сохранять базу в ветку bot-state
+
+concurrency:
+  group: signalbot               # запуски идут строго по очереди, база не портится
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Restore state (ветка bot-state)
+        run: |
+          URL="https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git"
+          if git ls-remote --exit-code --heads "$URL" bot-state >/dev/null 2>&1; then
+            git clone --quiet --depth 1 --branch bot-state "$URL" state
+          else
+            mkdir state && git -C state init --quiet -b bot-state && git -C state remote add origin "$URL"
+          fi
+
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
+          DB_PATH: state/signalbot.sqlite3
+        run: python -m signalbot.oneshot "${{ github.event.inputs.mode || 'auto' }}"
+
+      - name: Save state
+        if: always()
+        run: |
+          cd state
+          git config user.name "signalbot"
+          git config user.email "signalbot@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || { git commit -qm "state $(date -u +%FT%TZ)" && git push -q origin bot-state; }

@@ -98,6 +98,6 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         disclaimer=bool(raw.get("caption", {}).get("disclaimer", True)),
         watermark_text=c.get("watermark_text") or "",
         watermark_image=c.get("watermark_image"),
-        db_path=raw.get("db_path", "data/signalbot.sqlite3"),
+        db_path=os.getenv("DB_PATH") or raw.get("db_path", "data/signalbot.sqlite3"),
     )
     return cfg
