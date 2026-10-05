@@ -9,7 +9,7 @@ on:
         description: "Режим (auto — как по расписанию)"
         type: choice
         default: auto
-        options: [auto, scan, track, report, getid, preview]
+        options: [auto, scan, track, report, getid, preview, reset]
 
 permissions:
   contents: write                # сохранять базу в ветку bot-state
@@ -49,6 +49,7 @@ jobs:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DRY_RUN: ${{ vars.DRY_RUN || 'true' }}
           DB_PATH: state/signalbot.sqlite3
         run: python -m signalbot.oneshot "${{ github.event.inputs.mode || 'auto' }}"

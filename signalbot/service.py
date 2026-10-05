@@ -6,7 +6,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from .caption import build_caption, update_text
+from .caption import build_caption, plain_summary, update_text
 from .enrich import Context, MarketData
 from .chart import ChartStyle, render_idea_chart
 from .config import Config
@@ -18,6 +18,7 @@ from .scanner import analyze
 from .scoring import context_points
 from .stats import compute_stats, format_stats
 from .storage import Storage
+from .writer import PostWriter
 
 log = logging.getLogger(__name__)
 DAY_MS = 86_400_000
@@ -30,10 +31,14 @@ def utc_day_start_ms(now_ms: int) -> int:
 
 class Service:
     def __init__(
-        self, cfg: Config, ex: Exchanges, db: Storage, pub: Publisher, concurrency: int = 4, market: MarketData | None = None
+        self, cfg: Config, ex: Exchanges, db: Storage, pub: Publisher, concurrency: int = 4,
+        market: MarketData | None = None, writer: PostWriter | None = None,
     ):
         self.cfg, self.ex, self.db, self.pub = cfg, ex, db, pub
         self.market = market if market is not None else (MarketData(ex) if cfg.use_context else None)
+        if writer is None and cfg.writer_enabled and PostWriter.available():
+            writer = PostWriter(cfg.writer_model, cfg.writer_effort)
+        self.writer = writer
         self._sem = asyncio.Semaphore(concurrency)
         self._scan_lock = asyncio.Lock()
         self._track_lock = asyncio.Lock()
@@ -114,8 +119,16 @@ class Service:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         for idea, df in found:
             png = await asyncio.to_thread(render_idea_chart, df, idea, self._style(), TF_LABEL_RU.get(idea.timeframe, idea.timeframe))
-            await pub.post_photo(png, build_caption(idea, day, self.cfg.disclaimer), idea.ticker)
+            await pub.post_photo(png, await self._caption(idea, day), idea.ticker)
         return len(found)
+
+    async def _caption(self, idea: Idea, day: str) -> str:
+        """Текст поста: Claude (если есть ключ) или шаблоны; числа ТВХ/ТП/СЛ всегда считает бот."""
+        text = None
+        if self.writer is not None:
+            recent = [t[:160] for t in self.db.recent_posts(5)]
+            text = await asyncio.to_thread(self.writer.write, idea, day, recent)
+        return build_caption(idea, day, self.cfg.disclaimer, text)
 
     def _style(self) -> ChartStyle:
         return ChartStyle(
@@ -126,8 +139,9 @@ class Service:
         label = TF_LABEL_RU.get(idea.timeframe, idea.timeframe)
         png = await asyncio.to_thread(render_idea_chart, df, idea, self._style(), label)
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        caption = build_caption(idea, day, self.cfg.disclaimer)
+        caption = await self._caption(idea, day)
         chat_id, message_id = await self.pub.post_photo(png, caption, idea.ticker)
+        self.db.add_post(int(time.time() * 1000), plain_summary(caption))
         t = Tracked(
             symbol=idea.symbol, exchange=idea.exchange, timeframe=idea.timeframe, side=idea.side,
             zone_low=idea.zone.low, zone_high=idea.zone.high, pools=[p.price for p in idea.pools],

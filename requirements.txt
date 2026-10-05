@@ -1,4 +1,5 @@
 aiogram>=3.4,<4
+anthropic>=0.60
 ccxt>=4.3
 pandas>=2.1
 numpy>=1.26

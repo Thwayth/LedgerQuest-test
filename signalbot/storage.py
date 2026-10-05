@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS ideas (
     status TEXT NOT NULL, broken_ts INTEGER, entry_price REAL, tp_hit INTEGER NOT NULL DEFAULT 0,
     closed_ts INTEGER, result_pct REAL, r_multiple REAL, chat_id INTEGER, message_id INTEGER
 );
+CREATE TABLE IF NOT EXISTS posts (id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, text TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_ideas_symbol ON ideas(symbol);
 CREATE INDEX IF NOT EXISTS ix_ideas_status ON ideas(status);
 """
@@ -96,6 +97,24 @@ class Storage:
         with self._lock:
             rows = self._db.execute("SELECT * FROM ideas ORDER BY id").fetchall()
         return [_row_to_tracked(r) for r in rows]
+
+    def add_post(self, ts_ms: int, text: str) -> None:
+        with self._lock:
+            self._db.execute("INSERT INTO posts (ts, text) VALUES (?, ?)", (ts_ms, text))
+            self._db.commit()
+
+    def recent_posts(self, n: int = 5) -> list[str]:
+        with self._lock:
+            rows = self._db.execute("SELECT text FROM posts ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        return [r[0] for r in rows][::-1]
+
+    def clear_ideas(self) -> int:
+        """Сброс идей (после тестового периода, чтобы пробные идеи не блокировали боевые)."""
+        with self._lock:
+            n = self._db.execute("SELECT COUNT(*) FROM ideas").fetchone()[0]
+            self._db.execute("DELETE FROM ideas")
+            self._db.commit()
+        return n
 
     def count_created_since(self, ts_ms: int) -> int:
         with self._lock:

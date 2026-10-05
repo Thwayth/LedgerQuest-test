@@ -47,6 +47,9 @@ class Config:
     risk_per_trade_pct: float = 1.0
     disclaimer: bool = False
     use_context: bool = True
+    writer_enabled: bool = True
+    writer_model: str = "claude-opus-5-5"
+    writer_effort: str = "low"
     mascot_image: str | None = None
     watermark_text: str = ""
     watermark_image: str | None = None
@@ -99,6 +102,9 @@ def load_config(path: str | Path = "config.yaml", env_file: str | Path | None = 
         risk_per_trade_pct=float(raw.get("risk", {}).get("risk_per_trade_pct", 1.0)),
         disclaimer=bool(raw.get("caption", {}).get("disclaimer", False)),
         use_context=bool(raw.get("context", {}).get("enabled", True)),
+        writer_enabled=bool(raw.get("writer", {}).get("enabled", True)),
+        writer_model=str(raw.get("writer", {}).get("model", "claude-opus-5-5")),
+        writer_effort=str(raw.get("writer", {}).get("effort", "low")),
         mascot_image=c.get("mascot_image"),
         watermark_text=c.get("watermark_text") or "",
         watermark_image=c.get("watermark_image"),
